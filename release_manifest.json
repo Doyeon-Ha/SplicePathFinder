@@ -610,7 +610,7 @@
     },
     "README.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "97f90610daed32fdf9ca9934e83278bc03f8d3faa79335e2713c0006257e515f"
+      "release_sha256": "8fb5edeb3f2e27792cf50d0c5fe21ac74259eb30409d55c19d912b8ec7abfeab"
     },
     "THIRD_PARTY_NOTICES.md": {
       "source": "release documentation or metadata",
@@ -648,5 +648,7 @@
     "gpu_inference_verified": false,
     "fresh_install_verified": false,
     "full_benchmark_reproduction": false
-  }
+  },
+  "repository": "https://github.com/Doyeon-Ha/SplicePathFinder",
+  "project_license": null
 }

@@ -1,4 +1,4 @@
-# SplicePath and SplicePathFinder
+# SplicePathFinder
 
 Source code for the Research in Computational Molecular Biology (RECOMB) 2027
 submission. SplicePath predicts nucleotide-level splice-site probabilities;
@@ -19,6 +19,8 @@ tools when suitable wheels are unavailable. Install [uv](https://docs.astral.sh/
 and then:
 
 ```bash
+git clone https://github.com/Doyeon-Ha/SplicePathFinder.git
+cd SplicePathFinder
 uv sync --frozen --inexact
 .venv/bin/python -c 'import torch, mamba_ssm, causal_conv1d; print(torch.__version__)'
 ```
@@ -108,3 +110,10 @@ are disabled in the distributed configurations.
 hashes and adaptations made for this distribution. No research Git history is
 included. See [third-party notices](THIRD_PARTY_NOTICES.md) for bundled code and
 its licenses. Dataset and external model terms apply independently.
+
+## License
+
+No project-wide license has been specified. Public access to this source does
+not grant a general permission to reuse, modify or redistribute the project's
+original code. Bundled third-party code retains the licenses listed in
+[third-party notices](THIRD_PARTY_NOTICES.md).
