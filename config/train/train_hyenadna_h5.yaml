@@ -1,0 +1,240 @@
+base_path: .
+training:
+  run_name: hyenadna-bidirectional-small-random-init-weights-focal-loss-hnet-mamba2-encoder4-dechunker4-ratio0.03-cl-9000-tr-6000-chunk-rate-sweep
+  epochs: 20
+  effective_batch_size: 128
+  batch_size: 32
+  num_workers: 8
+  learning_rate_backbone: 0.0001
+  learning_rate_classification_head: 0.0005
+  weight_decay: 0.01
+  warmup_proportion: 0.0
+  class_weights:
+  - 4.0
+  - 4.0
+  - 1.0
+  checkpoint_dir: ${base_path}/checkpoints
+  gradient_clipping:
+    enabled: false
+    min_clip: 1.0
+    max_clip: 1.0
+  loss_function:
+    type: multi_class_focal_loss
+    label_smoothing: 0.0
+    multi_class_focal_loss:
+      gamma: 2.0
+    multi_label_focal_loss:
+      gamma:
+      - 2.0
+      - 2.0
+      - 0.5
+    use_negative_sampling: false
+    negative_sample_rate: 0.05
+  loss_weights:
+    classification: 1.0
+    aux_region: 0.1
+    aux_exon: 0.1
+    aux_usage: 0.1
+  classification:
+    enabled: true
+    use_hard_labels: true
+    acceptor_window_size: 1
+    donor_window_size: 1
+  scheduler:
+    type: cosine
+  checkpoint_save_strategy: epoch
+  checkpoint_save_steps: 1000
+  checkpoint_save_epochs: 1
+  evaluation:
+    use_histogram: false
+    dynamic_threshold:
+      enabled: true
+      objective: f1
+      target_precision: []
+      target_recall: []
+    test_evaluation:
+      enabled: true
+      frequency: epoch
+      interval: 20
+      evaluate_at_end: false
+      sample_proportion: 1.0
+      exclude_paralog_genes: false
+      paralog_gene_info_path: null
+    early_stopping:
+      enabled: true
+      patience: 4
+      min_delta: 0.002
+      mode: max
+      monitor: topk_accuracy_mean
+      restore_best_weights: true
+  distributed:
+    enabled: true
+    backend: nccl
+    master_port: 12361
+    find_unused_parameters: true
+    timeout_minutes: 300
+data:
+  train_h5_path: ${base_path}/data/h5_cl9000_sl6000_s2500_regions/dataset_train_all.h5
+  test_h5_path: ${base_path}/data/h5_cl9000_sl6000_s2500_regions/dataset_test_0.h5
+  context_length: 9000
+  junction_annotation_path: ${base_path}/gencode/ucsc_gencodeBasicV49.txt
+  genome_path: ${base_path}/genome/GRCh38.fa
+  paralog_info_path: null
+  rc_augment: false
+  augmentation:
+    position_jitter:
+      enabled: false
+      max_offset: 2000
+      num_augmented_copies: 1
+  sequence_layout:
+    mode: flank_target
+    target_region_length: 6000
+  random_seed: 42
+  train_split: 0.95
+  val_split: 0.05
+model:
+  model_type: hyenadna
+  hyenadna_local_dir: ${base_path}/model/hyenadna
+  model_options:
+  - LongSafari/hyenadna-tiny-1k-seqlen-hf
+  - LongSafari/hyenadna-tiny-16k-seqlen-d128-hf
+  - LongSafari/hyenadna-small-32k-seqlen-hf
+  - LongSafari/hyenadna-medium-160k-seqlen-hf
+  - LongSafari/hyenadna-medium-450k-seqlen-hf
+  - LongSafari/hyenadna-large-1m-seqlen-hf
+  model_index: 2
+  hidden_state_layer_index: -1
+  pretrained_path: null
+  initial_weights_path: null
+  mlm_pretrained_path: null
+  init_weight_dtype: float32
+  linear_layer_init_method: xavier
+  download: true
+  use_flash_fft: false
+  tokenizer_type: dynamic_chunker
+  kmer_size: 6
+  seq_length: 15000
+  tokenizer_max_length: 15000
+  dynamic_chunker:
+    target_chunk_rate: 0.5
+    encoder_type: mamba2
+    boundary_predictor_kernel_size: 7
+    boundary_predictor_hidden_dim: 64
+    mamba2_num_layers: 4
+    mamba2_d_state: 64
+    mamba2_d_conv: 4
+    mamba2_expand: 2
+    enable_encoder_residual: true
+    encoder_lr_scale: 1.0
+    dechunker_lr_scale: 1.0
+    dechunker_type: mamba2
+    max_within_chunk_offset: 32
+    attention_window_size: 8
+    attention_num_heads: 4
+    attention_dropout: 0.0
+    dechunker_mamba2_num_layers: 4
+    dechunker_mamba2_d_state: 64
+    dechunker_mamba2_d_conv: 4
+    dechunker_mamba2_expand: 2
+    boundary_loss_weight: 0.03
+    boundary_loss_type: hnet_ratio
+    gumbel_temperature: 1.0
+    inference_threshold: 0.5
+    stages:
+    - target_chunk_rate: 0.5
+      encoder_type: mamba2
+      mamba2_num_layers: 4
+      dechunker_type: mamba2
+      dechunker_mamba2_num_layers: 4
+      encoder_lr_scale: 0.45
+      dechunker_lr_scale: 0.45
+    - target_chunk_rate: 0.4
+      encoder_type: mamba2
+      mamba2_num_layers: 4
+      dechunker_type: mamba2
+      dechunker_mamba2_num_layers: 4
+      encoder_lr_scale: 0.63
+      dechunker_lr_scale: 0.63
+  backbone_additional_dim: 100
+  use_multi_scale_feature_aggregation: false
+  use_hybrid_backbone: true
+  use_head: false
+  classification_head_type: deep
+  aux_heads:
+    enable_region: false
+    enable_exon: false
+    enable_usage: false
+    region_num_classes: 7
+    exon_num_classes: 3
+    usage_num_classes: 4
+  base_backbone_output_dim: 256
+  local_feature_output_dim: 256
+  hidden_size: 256
+  dropout_rate: 0.1
+  freeze_backbone: false
+  freeze_policy: full
+  partial_freeze_layers: 12
+  peft:
+    enabled: false
+    method: lora
+    target_modules: auto
+    feedforward_modules:
+    - attention.output.dense
+    - intermediate.dense
+    - output.dense
+    modules_to_save: null
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    bias: none
+logging:
+  log_dir: ./logs
+  checkpoint_dir: ./checkpoints
+  enable_file_logging: true
+  log_level: INFO
+  log_format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  enable_distribution_logging: false
+  enable_timing_log: false
+  timing_log_interval: 100
+  filtering_debug:
+    enabled: true
+    max_examples_per_reason: 5
+    log_sequences: false
+  memory_management:
+    enable_aggressive_gc: true
+    gc_frequency: 100
+    max_timing_samples: 200
+    clear_cache_frequency: 500
+    auc_sample_size: 10000
+    auc_batch_sample_size: 1000
+mlflow:
+  enabled: false
+  experiment_name: splicepath
+  run_name: null
+  tags:
+    model_type: hyenadna
+    task: splicing-prediction
+    training_mode: distributed
+    dataset: spliceai-original-h5
+  log_artifacts:
+    model: true
+    config: true
+    checkpoints: false
+slack:
+  enabled: false
+  webhook_url: null
+  notify_on:
+    train_start: true
+    epoch_end: true
+    best_model: true
+    train_end: true
+    train_error: true
+  progress_milestones:
+  - 0
+  - 25
+  - 50
+  - 75
+  - 100
+  epoch_interval: 1
+  mention: null
+  timeout_sec: 5

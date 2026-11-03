@@ -1,0 +1,53 @@
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null
+version: v50_mane_regions_s1250_realflank
+flank_fill: real
+base_path: .
+cl_max: 10000
+sl: 5000
+stride: 1250
+train_chromosomes:
+- chr2
+- chr4
+- chr6
+- chr8
+- chr10
+- chr11
+- chr12
+- chr13
+- chr14
+- chr15
+- chr16
+- chr17
+- chr18
+- chr19
+- chr20
+- chr21
+- chr22
+- chrX
+- chrY
+test_chromosomes:
+- chr1
+- chr3
+- chr5
+- chr7
+- chr9
+chunk_size: 100
+canonical_dataset:
+  mode: gtf
+  tsl_max: null
+  level_max: null
+paths:
+  gtf: ${base_path}/gencode/gencode.v50.annotation.gtf
+  paralog_flags: ${base_path}/paralog_info/grch38_paralog_flags.tsv
+  splice_table: ${base_path}/data/canonical_dataset_v50_mane_regions.txt
+  ref_genome: ${base_path}/genome/gencode_v50/GRCh38.primary_assembly.genome.fa
+  output_dir: ${base_path}/data/h5_cl${cl_max}_sl${sl}_s${stride}_regions_realflank_v50mane
+logging:
+  level: INFO
+  format: '[%(asctime)s][%(name)s][%(levelname)s] %(message)s'
+  date_format: '%Y-%m-%d %H:%M:%S'

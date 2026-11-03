@@ -1,0 +1,10 @@
+defaults:
+- train_spf_sp_realflank_ep12
+- _self_
+cache_h5: ./data/eval/sav_pernt_cache_multichunk/REPORTEDGENE_sp_v50mane_hnet_ep10/cache.h5
+train:
+  out_dir: ./data/eval/spf_multichunk/cv5_sp_v50mane_hnet_ep10_reportedgene_cc
+mlflow:
+  experiment: spf_v50mane_reportedgene_cv5
+  run_name: spf_sp_v50mane_hnet_ep10_mc8750
+  enabled: false

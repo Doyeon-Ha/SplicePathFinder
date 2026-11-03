@@ -1,0 +1,9 @@
+defaults:
+- train_spf_sp_realflank_ep12
+- _self_
+cache_h5: ./data/eval/sav_pernt_cache_multichunk/FULL_sp_allgenes_realflank_nostopexon_hnet_ep8/cache.h5
+train:
+  out_dir: ./data/eval/spf_multichunk/cv5_sp_nostop_hnet_ep8
+mlflow:
+  run_name: spf_sp_nostop_hnet_ep8_mc8750
+  enabled: false

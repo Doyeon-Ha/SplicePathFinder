@@ -1,0 +1,12 @@
+base_path: .
+evaluation:
+  checkpoint_path: ${base_path}/checkpoints/hyenadna-bidirectional-h5-v1-extended-epochs-class-weights-ce/best_model.pt
+  test_h5_path: ./data/h5_cl10000/dataset_test_0_int.h5
+  thresholds: null
+  batch_size: 48
+  num_workers: 6
+  use_histogram: false
+  ignore_embed_metadata: false
+mlflow:
+  enabled: false
+  run_name: null

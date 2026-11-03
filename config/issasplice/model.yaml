@@ -1,0 +1,42 @@
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null
+model_path: ./hyena_dna/checkpoints
+model_name: hyenadna-medium-160k-seqlen
+device: cpu
+n_classes: 2
+hidden_size: 256
+dropout_rate: 0.1
+download: true
+freeze_backbone: false
+freeze_policy: full
+partial_freeze_layers: null
+weight_dtype: float32
+enable_timing_log: false
+timing_log_interval: 100
+special_tokens:
+  CLS: 0
+  SEP: 1
+  BOS: 2
+  MASK: 3
+  PAD: 4
+  RESERVED: 5
+  UNK: 6
+characters:
+  A: 7
+  C: 8
+  G: 9
+  T: 10
+  N: 11
+  '-': 12
+token_representations:
+  cls_token: '[CLS]'
+  sep_token: '[SEP]'
+  bos_token: '[BOS]'
+  mask_token: '[MASK]'
+  pad_token: '[PAD]'
+  eos_token: '[SEP]'
+  unk_token: '[UNK]'

@@ -1,0 +1,50 @@
+cache_h5: ./data/eval/sav_pernt_cache_multichunk/FULL_med_ei_ac_ep14/cache.h5
+window:
+  half_bp: 2500
+  left: 4375
+  right: 4375
+  coverage: true
+rbf:
+  num_centers: 16
+  trainable: false
+  per_channel: false
+  gamma: null
+  trainable_gamma: false
+marker:
+  enabled: false
+model:
+  d_model: 128
+  n_layers: 4
+  d_state: 64
+  d_conv: 4
+  expand: 2
+  headdim: 64
+  dropout: 0.1
+  pool: max
+  bidirectional: false
+train:
+  lr: 0.0003
+  weight_decay: 0.05
+  pos_weight: 3.2
+  batch_size: 64
+  max_epochs: 50
+  patience: 8
+  num_workers: 8
+  preload: false
+  device: cuda
+  out_dir: ./data/eval/spf_multichunk/ckpt
+split:
+  seed: 42
+  ratios:
+  - 0.7
+  - 0.15
+  - 0.15
+  freeze_npz: ./data/eval/clinvar_pb_2026_split/splits_seed42.npz
+feature:
+  enabled: true
+  scalar_npz: ./data/eval/clinvar2026_phastcons_probe/clinvar_20260628_conservation_scalars.npz
+  scalar_key: scalars
+mlflow:
+  experiment: spf_multichunk
+  run_name: spf_multichunk_8750
+  enabled: false
