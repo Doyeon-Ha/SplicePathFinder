@@ -3,8 +3,9 @@
 Paths below are relative to the repository root. HDF5 means Hierarchical Data
 Format version 5; VCF means Variant Call Format. Keep input checksums and row order
 with each run. Source code, synthetic tests, the frozen gene-level paralog
-lookup and public ClinVar cohort/gene metadata are distributed here. Trained weights are
-not hosted on GitHub; an external distribution endpoint has not been announced.
+lookup and public ClinVar cohort/gene metadata are distributed here. Trained
+SplicePath and SplicePathFinder weights are not distributed, and there is
+currently no plan to release them publicly.
 Splits, anchor masks and conservation arrays can be regenerated using the
 [complete ClinVar workflow](CLINVAR_WORKFLOW.md).
 

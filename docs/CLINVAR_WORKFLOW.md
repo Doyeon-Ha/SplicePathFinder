@@ -117,9 +117,9 @@ region membership, intron/exon distances and a cohort-order digest.
 
 ## 4. Score reference and alternative anchors
 
-A trained v50 epoch-10 backbone is required. Its weights are not hosted on
-GitHub. Use a checkpoint produced by [the backbone training recipe](REPRODUCIBILITY.md#backbone-training)
-or a separately obtained checkpoint with the matching recipe. Set the local
+A trained v50 epoch-10 backbone is required. There is currently no plan to
+publicly release its weights. Use a checkpoint produced by
+[the backbone training recipe](REPRODUCIBILITY.md#backbone-training). Set the local
 checkpoint variable below. Training writes a timestamped run directory under
 `checkpoints/`; replace `YYYYMMDD_HHMMSS` with that run's timestamp. Run these GPU
 commands using your compute scheduler.

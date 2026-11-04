@@ -4,8 +4,10 @@ This source distribution separates the SplicePath splice-site backbone from the
 SplicePathFinder (SPF) pathogenicity head. Reproducing numerical results requires
 the matching checkpoint, input sequences, variant row order, frozen fold files,
 eligibility masks and conservation sidecars. The supplied cohort/gene metadata
-and preparation workflow define the reference inputs; trained weights and large
-probability caches are obtained or computed separately.
+and preparation workflow define the reference inputs. There is currently no
+plan to publicly release trained model weights. Reproduction requires training
+the matching models and generating the large probability caches using the
+documented recipes.
 
 ## Experiment identity
 

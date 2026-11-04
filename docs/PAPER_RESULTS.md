@@ -96,8 +96,8 @@ It does not measure end-to-end throughput or fresh training time.
 
 The code is sufficient to define the retained computations. Exact runs also
 require the matching licensed source and frozen derived inputs described in
-[DATA.md](DATA.md). The public release currently has no download endpoint for
-trained weights or saved plotting frames. Frozen ClinVar cohort/gene metadata
+[DATA.md](DATA.md). There is currently no plan to publicly release trained model
+weights. Saved plotting frames are not distributed. Frozen ClinVar cohort/gene metadata
 are supplied in `resources/`; the [ClinVar workflow](CLINVAR_WORKFLOW.md)
 regenerates folds, anchor masks, strata and conservation arrays. The BRCA Exchange snapshot is identified by checksum; its
 release identifier remains unrecorded. These availability limits affect

@@ -1,6 +1,6 @@
 [project]
 name = "splicepathfinder"
-version = "1.0.0"
+version = "1.0.1"
 license = "Apache-2.0"
 description = "SplicePath and SplicePathFinder paper reproduction"
 readme = "README.md"
@@ -19,6 +19,7 @@ dependencies = [
     "omegaconf==2.3.0",
     "openpyxl>=3.1.5",
     "pandas==2.3.1",
+    "pydantic==2.11.7",
     "pyfaidx==0.8.1.4",
     "pyyaml>=6.0.2",
     "scikit-learn==1.7.0",

@@ -410,12 +410,12 @@
     "pyproject.toml": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
       "source_sha256": "6533be88e5025d425cbf912cb017dd9c11cb869d845a2d2022d38583e3cf73fa",
-      "release_sha256": "c4a16a7e8b7e1345c4947ba147242fe9bd092f03a5355cf0cd90cd6cc527ae1e"
+      "release_sha256": "a1bb9ba7872fc7882bd1ee4c7567246417349aa547eae17b4271eadd43608c66"
     },
     "uv.lock": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
       "source_sha256": "e2623d6a165fec4ee870950f888f7bf7adb241826d9e0494d71eb0e617626374",
-      "release_sha256": "e6dae88ee07f22e79518bd509833b829539f3a6d668dabb90d975a4a3d53cde0"
+      "release_sha256": "3a8a741c76ef359b966480403d9e00fd2fd6d9ef8cf8fe2ac6a9246e33e5e100"
     },
     ".python-version": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
@@ -486,7 +486,7 @@
     },
     "README.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "d837affb78493c42ab3715ffa533bdf68df68edfc34da160618cf91cc1958142"
+      "release_sha256": "fdab3d22cb647136a4cd6dd8a6f10d2dcca816c1adbd33af40bc0e7bedbb9b5a"
     },
     "THIRD_PARTY_NOTICES.md": {
       "source": "release documentation or metadata",
@@ -494,15 +494,15 @@
     },
     "docs/DATA.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "b0d5ef9592a149f20d5eedc1f72c507b11a073c57880b20f0f286da054dcfaae"
+      "release_sha256": "ea70800f2b7d7782d3ca76cc557d8cfa952222b6abf1fc727e4e1a627479527c"
     },
     "docs/REPRODUCIBILITY.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "1ac23562e4f8bde84ac0fede400a02a870b54f585c5cc4dc994f9bae25fb563d"
+      "release_sha256": "0dbe6e743c9a2c492a050b185586256845c9748160bf0ebb958b06dd2bfc08ff"
     },
     "docs/VALIDATION.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "eef6f095016bc5dbf0d0b4bc2b5855785400c446c9837e238535d0f3296de366"
+      "release_sha256": "de1b7c555cc2c682202b0ac14f1985917234efd3e40b8ba4668ef71c67fbc3f9"
     },
     "scripts/v50mane_universe_followups.py": {
       "source_path": "scripts/v50mane_universe_followups.py",
@@ -636,7 +636,7 @@
     },
     "docs/CLINVAR_WORKFLOW.md": {
       "source_kind": "release_addition",
-      "release_sha256": "1b0748d43006c64e16c39ffb2be7faa1538b4d04875cb3233d16c41de6a5cb5b"
+      "release_sha256": "6d08fa545858117824363a977aeb1be73c85ce991fa8503b394d911a93529a5a"
     },
     "process_input/variant_identity.py": {
       "source_kind": "release_addition",
@@ -691,7 +691,7 @@
     "GPU H-Net tests use a local miniature HyenaDNA trunk.",
     "Public ClinVar cohort/anchor and gene metadata are supplied with source-regeneration commands and row-order checks.",
     "Current-model preparation and OOF evaluation use explicit paths; the head defaults match the documented outputs.",
-    "Original code is licensed under Apache-2.0; model weights are not distributed through GitHub."
+    "Original code is licensed under Apache-2.0; no public release of trained model weights is currently planned."
   ],
   "validation": {
     "date": "2026-11-04",
@@ -709,7 +709,7 @@
     "gitleaks_findings": 0,
     "operational_endpoint_findings": 0,
     "device": "NVIDIA RTX A6000",
-    "fresh_install_verified": false,
+    "fresh_install_verified": true,
     "full_training_reproduction": false,
     "full_benchmark_reproduction": false,
     "cpu_workflow_tests_passed": 7,
@@ -726,21 +726,36 @@
     "all_mane_strata_arrays_identical": true,
     "long_allele_memory_regression_verified": true,
     "canonical_table_identical": true,
-    "canonical_transcripts": 18539
+    "canonical_transcripts": 18539,
+    "fresh_environment_python": "3.12.11",
+    "fresh_environment_uv": "0.11.28",
+    "fresh_environment_cuda_toolkit": "12.8.93",
+    "fresh_environment_cxx": "GCC/G++ 13.4.0",
+    "fresh_environment_initial_packages": 0,
+    "fresh_environment_installed_packages": 103,
+    "fresh_environment_gpu_tests_passed": 233,
+    "fresh_environment_cli_checks_passed": 5,
+    "fresh_environment_inference_variants": 16,
+    "fresh_environment_backbone_forward_batch": 16,
+    "fresh_environment_head_batch_argument": 64,
+    "fresh_environment_head_final_batch_rows": 16,
+    "fresh_environment_row_identities_preserved": true,
+    "fresh_environment_finite_scores": true
   },
   "repository": "https://github.com/Doyeon-Ha/SplicePathFinder",
   "project_license": "Apache-2.0",
-  "manuscript_commit": "6867ec4c0d3971cc136043fa2ac5491bc5ce7a88",
+  "manuscript_commit": "2ed792e43e1d96b2bca69e5fe383df5edf2119af",
   "analysis_source_commit": "bd578bf70b1fd9ecba3903dc17f2f1b22f6c88fe",
   "scope": "Reported main and supplementary results; HyenaDNA/Mamba-2 SplicePath and pathogenicity heads, controls, inference and analysis.",
   "release": {
-    "version": "1.0.0",
-    "tag": "v1.0.0",
+    "version": "1.0.1",
+    "tag": "v1.0.1",
     "weights_included": false
   },
   "copyright": {
     "year": 2026,
     "holder": "3billion",
     "notice": "NOTICE"
-  }
+  },
+  "weight_availability": "No public release of trained model weights is currently planned."
 }

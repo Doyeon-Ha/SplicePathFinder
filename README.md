@@ -19,13 +19,20 @@ scoring, conservation controls, confidence intervals and figure rendering. The
 
 Run commands from this repository's root. The locked environment targets Linux,
 Python 3.12 and NVIDIA graphics processing units (GPUs), with PyTorch's Compute
-Unified Device Architecture (CUDA) 12.8 build. Mamba-2 and causal convolution extensions require compatible CUDA build
-tools when suitable wheels are unavailable. Install [uv](https://docs.astral.sh/uv/)
-and then:
+Unified Device Architecture (CUDA) 12.8 build. Install a CUDA 12.8 development
+toolkit, including `nvcc`, and a compatible C++ compiler (`g++` 11–13) to build Mamba-2 and
+causal convolution extensions when suitable wheels are unavailable. The graphics
+driver alone does not provide these build tools. Install
+[uv](https://docs.astral.sh/uv/) and then:
 
 ```bash
-git clone --branch v1.0.0 https://github.com/Doyeon-Ha/SplicePathFinder.git
+git clone --branch v1.0.1 https://github.com/Doyeon-Ha/SplicePathFinder.git
 cd SplicePathFinder
+# Set this to your installed CUDA 12.8 development toolkit.
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH="$CUDA_HOME/bin:$PATH"
+nvcc --version
+"${CXX:-c++}" --version
 uv sync --frozen --inexact
 .venv/bin/python -c 'import torch, mamba_ssm, causal_conv1d; print(torch.__version__)'
 ```
@@ -33,6 +40,10 @@ uv sync --frozen --inexact
 `pyproject.toml` and `uv.lock` define the environment. Third-party benchmark
 models, including the official SpliceAI TensorFlow distribution, need their own
 environments and weights.
+
+The first source build of the CUDA extensions can take tens of minutes. See
+[the validation record](docs/VALIDATION.md) for the tested toolchain and inference
+scope.
 
 ## Data downloads and access
 
@@ -64,9 +75,10 @@ fitting → held-out evaluation, with row-identity checks at each boundary.
 The frozen public cohort and gene metadata are included in `resources/` with
 checksums; source-generation commands are documented in that workflow.
 
-**Trained model weights are not hosted on GitHub or attached to this release.**
-Use locally trained checkpoints or weights obtained separately from the authors.
-An external weight-download location has not been announced in this repository.
+**There is currently no plan to publicly release trained SplicePath or
+SplicePathFinder model weights.** Weights are not included in this repository or
+its releases. Train matching checkpoints using the
+[documented recipes](docs/REPRODUCIBILITY.md).
 
 ## Hardware resources
 
