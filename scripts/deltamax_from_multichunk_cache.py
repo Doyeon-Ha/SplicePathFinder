@@ -13,7 +13,7 @@ wise selection; a raw cache cannot recover the exact masked score afterward.
 
 delta_mass (L1 over the window) comes along because it costs one more line and
 breaks ties among the many canonical variants that saturate delta_max at ~1.0.
-It is an alternative aggregation, never the headline (CLAUDE.md, registry).
+It is an alternative aggregation, never the headline.
 """
 from __future__ import annotations
 
@@ -173,7 +173,7 @@ def main() -> None:
             v_chrom = dec(sf["chrom"][:])
         missing = sorted({x for x in g if x not in genes})
         if missing:
-            # 일부만 마스킹된 결과가 masked로 기록되는 것을 막는다(CLAUDE.md).
+            # 일부만 마스킹된 결과가 masked로 기록되는 것을 막는다.
             raise SystemExit(
                 f"{len(missing)} anchoring genes are absent from the annotation "
                 f"(e.g. {missing[:5]}); masking would cover only part of the "

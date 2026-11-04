@@ -241,7 +241,7 @@
     },
     "scripts/deltamax_from_multichunk_cache.py": {
       "source_sha256": "b4ab481ae4f867152cc271a379e077851bd9913021acf69fc70c2a9e68647e4f",
-      "release_sha256": "b4ab481ae4f867152cc271a379e077851bd9913021acf69fc70c2a9e68647e4f"
+      "release_sha256": "83d8b3b18cd7a67add4c8e50412bbc0f4813f13461bf8569c97523f83af5ac9f"
     },
     "scripts/eval_drcons_cv5_oof.py": {
       "source_sha256": "b8e84b50106e79e558627af4417904a55f87039374a66a3e37fbfb88f4b2a39e",
