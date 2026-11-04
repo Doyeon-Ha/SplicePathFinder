@@ -174,19 +174,6 @@ model:
   freeze_backbone: false
   freeze_policy: full
   partial_freeze_layers: 12
-  peft:
-    enabled: false
-    method: lora
-    target_modules: auto
-    feedforward_modules:
-    - attention.output.dense
-    - intermediate.dense
-    - output.dense
-    modules_to_save: null
-    r: 16
-    alpha: 32
-    dropout: 0.05
-    bias: none
 logging:
   log_dir: ./logs
   checkpoint_dir: ./checkpoints
@@ -207,34 +194,3 @@ logging:
     clear_cache_frequency: 500
     auc_sample_size: 10000
     auc_batch_sample_size: 1000
-mlflow:
-  enabled: false
-  experiment_name: splicepath
-  run_name: null
-  tags:
-    model_type: hyenadna
-    task: splicing-prediction
-    training_mode: distributed
-    dataset: spliceai-original-h5
-  log_artifacts:
-    model: true
-    config: true
-    checkpoints: false
-slack:
-  enabled: false
-  webhook_url: null
-  notify_on:
-    train_start: true
-    epoch_end: true
-    best_model: true
-    train_end: true
-    train_error: true
-  progress_milestones:
-  - 0
-  - 25
-  - 50
-  - 75
-  - 100
-  epoch_interval: 1
-  mention: null
-  timeout_sec: 5

@@ -15,7 +15,6 @@ from .modeling_hyena import (
     HyenaDNAModel,
     HyenaDNAPreTrainedModel,
 )
-from .modeling_hyena_jepa import HyenaDNAForJEPA, JEPAOutput
 
 __all__ = [
     "HyenaConfig",
@@ -24,7 +23,5 @@ __all__ = [
     "HyenaDNAForCausalLM",
     "HyenaDNAForMaskedLM",
     "HyenaDNAForSequenceClassification",
-    "HyenaDNAForJEPA",
-    "JEPAOutput",
     "OverlappingKmerTokenizer",
 ]

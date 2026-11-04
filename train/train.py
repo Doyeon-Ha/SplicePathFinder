@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import mlflow
 import numpy as np
 import torch
 import torch.distributed as dist  # noqa: F401
@@ -30,7 +29,6 @@ from tqdm import tqdm
 from transformers.optimization import get_scheduler
 
 from model.checkpoint_metadata import build_checkpoint_metadata
-from model.ngram_embedding import NgramEmbedding
 from process_input.conservation import DEFAULT_PHYLOP_CLIP
 from train.loss import (
     MultiClassFocalLoss,
@@ -47,13 +45,8 @@ from train.svdb_validation import (
     visible_gpus,
 )
 from train.trainer import IssaSpliceTrainer
-from utils.distributed_engine import (
-    DeepSpeedEngine,
-    DistributedEngine,
-    create_engine,
-)
+from utils.distributed_engine import DistributedEngine, create_engine
 from utils.distributed_utils import cleanup_distributed, set_up_ddp
-from utils.slack_notifier import SlackNotifier
 from utils.utils import (
     archive_code_snapshot,
     center_indices,
@@ -67,23 +60,6 @@ from utils.utils import (
 )
 
 
-def _active_mlflow_run_id() -> str | None:
-    """Return the active MLflow run id, or ``None`` when tracking is off.
-
-    Returns:
-        str | None: ``mlflow.active_run().info.run_id`` when an MLflow
-        run is active; ``None`` otherwise (or on any access failure).
-    """
-    try:
-        run = mlflow.active_run()
-    except (AttributeError, OSError):
-        return None
-    if run is None:
-        return None
-    try:
-        return run.info.run_id
-    except AttributeError:
-        return None
 
 
 class ScoreLabelPairs:
@@ -238,7 +214,6 @@ class SplicingTrainer:
 
         # Store config as instance variable for access in all methods
         self.cfg = cfg_train
-        self.cfg_mlflow = self.cfg.mlflow
         self.cfg_model = cfg_model
 
         model_options = OmegaConf.select(self.cfg, "model.model_options", default=None)
@@ -462,13 +437,12 @@ class SplicingTrainer:
                 self.logger, "info", f"✅ Model loaded: {self.model_type}"
             )
 
-            if self.model_type == "hyenadna":
-                log_only_master_process(
-                    self.logger, "info", "🧬 Hyenadna backbone detected"
-                )
-                log_only_master_process(
-                    self.logger, "info", f"   - HF model: {self.model_name}"
-                )
+            log_only_master_process(
+                self.logger, "info", "🧬 Hyenadna backbone detected"
+            )
+            log_only_master_process(
+                self.logger, "info", f"   - HF model: {self.model_name}"
+            )
 
             log_only_master_process(
                 self.logger, "info", f"🎭 Model dtype: {self.model.weight_dtype}"
@@ -481,11 +455,7 @@ class SplicingTrainer:
             # Print detailed model information
             self.model.print_model_info()
 
-        # Build the distributed engine (DDP default; DeepSpeed opt-in via
-        # training.distributed.engine=deepspeed). The actual model /
-        # optimizer / scheduler wrap is deferred until after they are all
-        # built — DeepSpeed.initialize takes ownership of all three at
-        # once (data-model.md entity 3).
+        # Wrap distributed execution after the model and optimizer are built.
         engine_local_rank = self.local_rank if self.is_distributed else None
         self.engine: DistributedEngine = create_engine(
             self.cfg, local_rank=engine_local_rank
@@ -1035,22 +1005,9 @@ class SplicingTrainer:
 
             backbone_params: list = []
             head_params: list = []
-            # N-gram embedding tables (model/ngram_embedding.py), wherever the
-            # module sits: no weight decay, so a row whose k-mer never occurs
-            # stays at its zero init.
-            ngram_table_ids = {
-                id(p)
-                for module in self.model.modules()
-                if isinstance(module, NgramEmbedding)
-                for p in module.tables.parameters()
-            }
-            ngram_table_params: list = []
             stage_encoder_params: list[list] = [[] for _ in encoder_lr_scales]
             stage_dechunker_params: list[list] = [[] for _ in dechunker_lr_scales]
             for name, param in self.model.named_parameters():
-                if id(param) in ngram_table_ids:
-                    ngram_table_params.append(param)
-                    continue
                 stage_idx = self._match_stage_param(name)
                 if stage_idx is not None:
                     role, idx = stage_idx
@@ -1084,17 +1041,6 @@ class SplicingTrainer:
                     stage_lr_log_parts.append(
                         f"stage{idx}.dechunker x{scale:.3f}->{stage_lr:.2e}"
                     )
-            if ngram_table_params:
-                param_groups.append(
-                    {
-                        "params": ngram_table_params,
-                        "lr": base_backbone_lr,
-                        "weight_decay": 0.0,
-                    }
-                )
-                stage_lr_log_parts.append(
-                    f"ngram tables ->{base_backbone_lr:.2e}, weight_decay 0"
-                )
 
             self.optimizer = optim.AdamW(
                 param_groups,
@@ -1158,12 +1104,7 @@ class SplicingTrainer:
                 f"{self.num_warmup_steps:,} warmup steps",
             )
 
-            # Wrap model + optimizer + scheduler through the distributed
-            # engine. DDPEngine wraps with torch.nn.parallel.DistributedDataParallel
-            # when distributed; DeepSpeedEngine triggers deepspeed.initialize
-            # and may rebind optimizer / scheduler. Reassigning is required
-            # because DeepSpeed returns its own optimizer / lr_scheduler
-            # references that the trainer must use thereafter.
+            # Wrap the model with PyTorch distributed data parallel.
             self.model, self.optimizer, self.scheduler = self.engine.wrap(
                 self.model, self.optimizer, self.scheduler
             )
@@ -1266,7 +1207,6 @@ class SplicingTrainer:
 
         # Initialize experiment tracking (MLflow)
         if is_master_process():
-            self._setup_experiment_tracking()
 
             log_only_master_process(
                 self.logger, "info", "✅ SplicingTrainer initialization complete!"
@@ -1285,10 +1225,6 @@ class SplicingTrainer:
                 )
             log_only_master_process(self.logger, "info", "=" * 60)
 
-        # Slack progress notifier (no-op unless slack.enabled and webhook configured)
-        self.slack_notifier: SlackNotifier = SlackNotifier.from_config(
-            self.cfg, run_name=self.run_name
-        )
 
         # Soft labels were removed in the v2 config revamp; the trainer now
         # always operates on hard one-hot labels.
@@ -1466,733 +1402,10 @@ class SplicingTrainer:
 
         perf["speedup_calculated"] = True
 
-    def _setup_experiment_tracking(self) -> None:
-        """
-        Set up experiment tracking (MLflow).
-        """
-        # Initialize MLflow tracking
-        if self.cfg_mlflow.enabled:
-            self.logger.info("🔬 Setting up MLflow tracking...")
 
-            tracking_uri = os.environ["MLFLOW_URI"]
-            mlflow.set_tracking_uri(tracking_uri)
-            self.logger.info(f"📍 MLflow tracking URI: {tracking_uri}")
 
-            # Set experiment
-            experiment_id = self.cfg_mlflow.experiment_id
-            experiment_name = self.cfg_mlflow.experiment_name
 
-            if experiment_id is not None:
-                mlflow.set_experiment(experiment_id=str(experiment_id))
-                self.logger.info(
-                    f"🧪 Using MLflow experiment ID: {experiment_id} "
-                    f"({experiment_name})"
-                )
-            else:
-                mlflow.set_experiment(experiment_name)
-                self.logger.info(f"🧪 Using MLflow experiment: {experiment_name}")
 
-            # Determine MLflow run name with priority:
-            # 1. mlflow.run_name (MLflow-specific override)
-            # 2. training.run_name (shared run name)
-            # 3. Auto-generated run name (fallback)
-            mlflow_run_name = self.cfg_mlflow.run_name
-            if mlflow_run_name:
-                run_name = mlflow_run_name
-                self.logger.info(f"🏷️  Using MLflow-specific run name: {run_name}")
-            else:
-                run_name = self.run_name  # Use the run name determined earlier
-                self.logger.info(f"🏷️  Using shared run name for MLflow: {run_name}")
-
-            # resolve=False matches OmegaConf.save and tolerates dangling
-            # cfg interpolations (e.g., NeoBERT's nested
-            # ${model.model_options[${model.model_index}]} syntax).
-            tags = OmegaConf.to_container(self.cfg_mlflow.tags, resolve=False)
-
-            # Add system info to tags
-            tags.update(
-                {
-                    "timestamp": self.training_start_time,
-                    "run_name": self.run_name,
-                    "hostname": os.environ.get("HOSTNAME", "unknown"),
-                    "distributed": str(self.is_distributed),
-                    "world_size": str(self.world_size),
-                    "local_rank": str(self.local_rank),
-                }
-            )
-
-            mlflow.start_run(run_name=run_name, tags=tags)
-            self.logger.info(f"🚀 Started MLflow run: {run_name}")
-
-            # Log hyperparameters from config
-            self._log_hyperparameters()
-
-            # Log config as artifact if enabled
-            if self.cfg_mlflow.log_artifacts.config:
-                # resolve=False — see tags container above.
-                config_dict = OmegaConf.to_container(self.cfg, resolve=False)
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".yaml", delete=False
-                ) as f:
-                    yaml.dump(config_dict, f, default_flow_style=False)
-                    temp_config_path = f.name
-
-                try:
-                    mlflow.log_artifact(temp_config_path, "config")
-                    self.logger.info("📋 Config logged as MLflow artifact")
-                finally:
-                    os.unlink(temp_config_path)
-
-            self.logger.info("✅ MLflow tracking setup complete!")
-        else:
-            self.logger.info("📊 MLflow tracking disabled")
-
-    def _log_hyperparameters(self) -> None:
-        """
-        Log hyperparameters to MLflow.
-
-        Logs all configuration parameters from training, data, model, and logging
-        sections to MLflow for experiment tracking and reproducibility.
-        """
-        # Training hyperparameters
-        training_config = self.cfg.training
-        gradient_clipping_config = training_config.gradient_clipping
-        loss_config = training_config.loss_function
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Training hyperparameters (basic)
-        # ─────────────────────────────────────────────────────────────────────
-        mlflow.log_params(
-            {
-                "run_name": training_config.run_name,
-                "epochs": training_config.epochs,
-                "batch_size": training_config.batch_size,
-                "num_workers": training_config.num_workers,
-                "learning_rate_backbone": training_config.learning_rate_backbone,
-                "learning_rate_classification_head": (
-                    training_config.learning_rate_classification_head
-                ),
-                "weight_decay": training_config.weight_decay,
-                "warmup_proportion": training_config.warmup_proportion,
-                "world_size": int(os.environ.get("WORLD_SIZE", "1")),
-                "class_weights": str(training_config.class_weights),
-                "checkpoint_dir": str(training_config.checkpoint_dir),
-            }
-        )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Gradient clipping
-        # ─────────────────────────────────────────────────────────────────────
-        mlflow.log_params(
-            {
-                "gradient_clipping_enabled": OmegaConf.select(
-                    self.cfg,
-                    "training.gradient_clipping.enabled",
-                    default=True,
-                ),
-                "gradient_clipping_min_clip": (gradient_clipping_config.min_clip),
-                "gradient_clipping_max_clip": (gradient_clipping_config.max_clip),
-            }
-        )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Loss function
-        # ─────────────────────────────────────────────────────────────────────
-        mlflow.log_params(
-            {
-                "loss_function_type": loss_config.type,
-                "loss_use_negative_sampling": OmegaConf.select(
-                    loss_config, "use_negative_sampling", default=False
-                ),
-                "loss_negative_sample_rate": OmegaConf.select(
-                    loss_config, "negative_sample_rate", default=0.05
-                ),
-            }
-        )
-
-        # Multi-class focal loss gamma
-        if loss_config.type == "multi_class_focal_loss":
-            mc_focal_cfg = OmegaConf.select(
-                loss_config, "multi_class_focal_loss", default=None
-            )
-            if mc_focal_cfg is not None:
-                mlflow.log_params({"focal_loss_gamma": float(mc_focal_cfg.gamma)})
-
-        # Multi-label focal loss gamma (scalar or per-class list)
-        if loss_config.type == "multi_label_focal_loss":
-            focal_config = loss_config.multi_label_focal_loss
-            gamma_cfg = focal_config.gamma
-            try:
-                is_list_like = isinstance(gamma_cfg, (list, tuple)) or (
-                    "ListConfig" in str(type(gamma_cfg))
-                )
-                if is_list_like:
-                    gamma_list = [float(g) for g in list(gamma_cfg)]
-                    mlflow.log_params(
-                        {
-                            "focal_loss_gamma": json.dumps(gamma_list),
-                            "focal_gamma_acceptor": gamma_list[0]
-                            if len(gamma_list) > 0
-                            else None,
-                            "focal_gamma_donor": gamma_list[1]
-                            if len(gamma_list) > 1
-                            else None,
-                            "focal_gamma_neither": gamma_list[2]
-                            if len(gamma_list) > 2
-                            else None,
-                        }
-                    )
-                else:
-                    mlflow.log_params({"focal_loss_gamma": float(gamma_cfg)})
-            except Exception:
-                mlflow.log_params({"focal_loss_gamma": str(gamma_cfg)})
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Classification head config
-        # ─────────────────────────────────────────────────────────────────────
-        cls_cfg = OmegaConf.select(training_config, "classification", default=None)
-        if cls_cfg is not None:
-            mlflow.log_params(
-                {
-                    "classification_enabled": self.is_classification_enabled,
-                    "classification_use_hard_labels": OmegaConf.select(
-                        cls_cfg, "use_hard_labels", default=False
-                    ),
-                    "classification_acceptor_window_size": OmegaConf.select(
-                        cls_cfg, "acceptor_window_size", default=None
-                    ),
-                    "classification_donor_window_size": OmegaConf.select(
-                        cls_cfg, "donor_window_size", default=None
-                    ),
-                }
-            )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Regression head config
-        # ─────────────────────────────────────────────────────────────────────
-        reg_cfg = OmegaConf.select(training_config, "regression", default=None)
-        if reg_cfg is not None:
-            mlflow.log_params(
-                {
-                    "regression_enabled": self.is_regression_enabled,
-                    "regression_pos_weight": OmegaConf.select(
-                        reg_cfg, "pos_weight", default=1.0
-                    ),
-                    "regression_use_hard_labels": OmegaConf.select(
-                        reg_cfg, "use_hard_labels", default=False
-                    ),
-                    "regression_acceptor_window_size": OmegaConf.select(
-                        reg_cfg, "acceptor_window_size", default=None
-                    ),
-                    "regression_donor_window_size": OmegaConf.select(
-                        reg_cfg, "donor_window_size", default=None
-                    ),
-                }
-            )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Scheduler and checkpoint strategy
-        # ─────────────────────────────────────────────────────────────────────
-        scheduler_cfg = OmegaConf.select(training_config, "scheduler", default=None)
-        mlflow.log_params(
-            {
-                "scheduler_type": (scheduler_cfg.type if scheduler_cfg else "cosine"),
-                "checkpoint_save_strategy": OmegaConf.select(
-                    training_config, "checkpoint_save_strategy", default="step"
-                ),
-                "checkpoint_save_steps": OmegaConf.select(
-                    training_config, "checkpoint_save_steps", default=100
-                ),
-                "checkpoint_save_epochs": OmegaConf.select(
-                    training_config, "checkpoint_save_epochs", default=1
-                ),
-                "gradient_accumulation_steps": OmegaConf.select(
-                    training_config, "gradient_accumulation_steps", default=1
-                ),
-            }
-        )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Evaluation config
-        # ─────────────────────────────────────────────────────────────────────
-        eval_cfg = OmegaConf.select(training_config, "evaluation", default=None)
-        if eval_cfg is not None:
-            mlflow.log_params(
-                {
-                    "evaluation_use_histogram": OmegaConf.select(
-                        eval_cfg, "use_histogram", default=True
-                    ),
-                }
-            )
-
-            # Dynamic threshold
-            dyn_thr_cfg = OmegaConf.select(eval_cfg, "dynamic_threshold", default=None)
-            if dyn_thr_cfg is not None:
-                mlflow.log_params(
-                    {
-                        "dynamic_threshold_enabled": OmegaConf.select(
-                            dyn_thr_cfg, "enabled", default=False
-                        ),
-                        "dynamic_threshold_objective": OmegaConf.select(
-                            dyn_thr_cfg, "objective", default="f1"
-                        ),
-                        "dynamic_threshold_target_precision": str(
-                            OmegaConf.select(
-                                dyn_thr_cfg, "target_precision", default=[]
-                            )
-                        ),
-                        "dynamic_threshold_target_recall": str(
-                            OmegaConf.select(dyn_thr_cfg, "target_recall", default=[])
-                        ),
-                    }
-                )
-
-            # Test evaluation
-            test_eval_cfg = OmegaConf.select(eval_cfg, "test_evaluation", default=None)
-            if test_eval_cfg is not None:
-                mlflow.log_params(
-                    {
-                        "test_evaluation_enabled": OmegaConf.select(
-                            test_eval_cfg, "enabled", default=False
-                        ),
-                        "test_evaluation_frequency": OmegaConf.select(
-                            test_eval_cfg, "frequency", default="epoch"
-                        ),
-                        "test_evaluation_interval": OmegaConf.select(
-                            test_eval_cfg, "interval", default=1
-                        ),
-                        "test_evaluation_evaluate_at_end": OmegaConf.select(
-                            test_eval_cfg, "evaluate_at_end", default=True
-                        ),
-                        "test_evaluation_sample_proportion": OmegaConf.select(
-                            test_eval_cfg, "sample_proportion", default=1.0
-                        ),
-                    }
-                )
-
-            # Early stopping
-            es_cfg = OmegaConf.select(eval_cfg, "early_stopping", default=None)
-            if es_cfg is not None:
-                mlflow.log_params(
-                    {
-                        "early_stopping_enabled": OmegaConf.select(
-                            es_cfg, "enabled", default=False
-                        ),
-                        "early_stopping_patience": OmegaConf.select(
-                            es_cfg, "patience", default=5
-                        ),
-                        "early_stopping_min_delta": OmegaConf.select(
-                            es_cfg, "min_delta", default=0.0
-                        ),
-                        "early_stopping_mode": OmegaConf.select(
-                            es_cfg, "mode", default="min"
-                        ),
-                        "early_stopping_monitor": OmegaConf.select(
-                            es_cfg, "monitor", default="loss"
-                        ),
-                        "early_stopping_restore_best_weights": OmegaConf.select(
-                            es_cfg, "restore_best_weights", default=True
-                        ),
-                    }
-                )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Distributed training config
-        # ─────────────────────────────────────────────────────────────────────
-        dist_cfg = OmegaConf.select(training_config, "distributed", default=None)
-        if dist_cfg is not None:
-            mlflow.log_params(
-                {
-                    "distributed_enabled": OmegaConf.select(
-                        dist_cfg, "enabled", default=False
-                    ),
-                    "distributed_backend": OmegaConf.select(
-                        dist_cfg, "backend", default="nccl"
-                    ),
-                    "distributed_master_port": OmegaConf.select(
-                        dist_cfg, "master_port", default=12355
-                    ),
-                    "distributed_find_unused_parameters": OmegaConf.select(
-                        dist_cfg, "find_unused_parameters", default=False
-                    ),
-                    "distributed_timeout_minutes": OmegaConf.select(
-                        dist_cfg, "timeout_minutes", default=30
-                    ),
-                }
-            )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Loss weights
-        # ─────────────────────────────────────────────────────────────────────
-        loss_weights_cfg = OmegaConf.select(
-            training_config, "loss_weights", default=None
-        )
-        if loss_weights_cfg is not None:
-            mlflow.log_params(
-                {
-                    "loss_weight_classification": OmegaConf.select(
-                        loss_weights_cfg, "classification", default=1.0
-                    ),
-                }
-            )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Data hyperparameters
-        # ─────────────────────────────────────────────────────────────────────
-        data_config = self.cfg.data
-        mlflow.log_params(
-            {
-                "train_h5_path": OmegaConf.select(
-                    data_config, "train_h5_path", default=None
-                ),
-                "val_h5_path": OmegaConf.select(
-                    data_config, "val_h5_path", default=None
-                ),
-                "test_h5_path": OmegaConf.select(
-                    data_config, "test_h5_path", default=None
-                ),
-                "context_length": OmegaConf.select(
-                    data_config, "context_length", default=None
-                ),
-                "rc_augment": OmegaConf.select(
-                    data_config, "rc_augment", default=False
-                ),
-                "sequence_layout_mode": OmegaConf.select(
-                    data_config, "sequence_layout.mode", default=None
-                ),
-                "random_seed": data_config.random_seed,
-                "train_split": data_config.train_split,
-                "val_split": data_config.val_split,
-            }
-        )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Model hyperparameters (common)
-        # ─────────────────────────────────────────────────────────────────────
-        model_config = self.cfg.model
-        # Get model_option safely (SpliceAI doesn't use model_options)
-        if hasattr(model_config, "model_options") and model_config.model_options:
-            model_option = model_config.model_options[model_config.model_index]
-            model_index = model_config.model_index
-        else:
-            model_option = self.model_name
-            model_index = 0
-        mlflow.log_params(
-            {
-                "model_type": self.model_type,
-                "model_index": model_index,
-                "model_option": model_option,
-                "nt_hidden_state_layer_index": OmegaConf.select(
-                    model_config, "nt_hidden_state_layer_index", default=-1
-                ),
-                "pretrained_path": OmegaConf.select(
-                    model_config, "pretrained_path", default=None
-                ),
-                "initial_weights_path": OmegaConf.select(
-                    model_config, "initial_weights_path", default=None
-                ),
-                "mlm_pretrained_path": OmegaConf.select(
-                    model_config, "mlm_pretrained_path", default=None
-                ),
-                "init_weight_dtype": OmegaConf.select(
-                    model_config, "init_weight_dtype", default="float32"
-                ),
-                "linear_layer_init_method": OmegaConf.select(
-                    model_config, "linear_layer_init_method", default="xavier"
-                ),
-                "download": OmegaConf.select(model_config, "download", default=True),
-                "seq_length": model_config.seq_length,
-                "tokenizer_max_length": OmegaConf.select(
-                    model_config,
-                    "tokenizer_max_length",
-                    default=model_config.seq_length,
-                ),
-                "backbone_additional_dim": OmegaConf.select(
-                    model_config, "backbone_additional_dim", default=None
-                ),
-                "use_multi_scale_feature_aggregation": OmegaConf.select(
-                    model_config, "use_multi_scale_feature_aggregation", default=False
-                ),
-                "use_hybrid_backbone": OmegaConf.select(
-                    model_config, "use_hybrid_backbone", default=False
-                ),
-                "use_head": OmegaConf.select(model_config, "use_head", default=False),
-                "classification_head_type": OmegaConf.select(
-                    model_config, "classification_head_type", default="standard"
-                ),
-                "n_classification_classes": 3,
-                "dropout_rate": model_config.dropout_rate,
-                "freeze_backbone": model_config.freeze_backbone,
-                "freeze_policy": model_config.freeze_policy,
-                "partial_freeze_layers": OmegaConf.select(
-                    model_config, "partial_freeze_layers", default=0
-                ),
-            }
-        )
-
-        # HyenaDNA-specific parameters
-        if model_config.model_type == "hyenadna":
-            hyenadna_option = (
-                model_config.model_options[model_config.model_index]
-                if hasattr(model_config, "model_options") and model_config.model_options
-                else self.model_name
-            )
-            mlflow.log_params(
-                {
-                    "hyenadna_local_dir": OmegaConf.select(
-                        model_config, "hyenadna_local_dir", default=None
-                    ),
-                    "hyenadna_model_option": hyenadna_option,
-                    "hyenadna_model_name": self.model_name,
-                }
-            )
-
-        # MHA model-specific parameters
-        if model_config.model_type == "mha":
-            mha_config = model_config.mha_config
-            mlflow.log_params(
-                {
-                    "mha_d_model": mha_config.d_model,
-                    "mha_n_head": mha_config.n_head,
-                    "mha_n_layer": mha_config.n_layer,
-                    "mha_d_ff": mha_config.d_ff,
-                    "mha_dropout": mha_config.dropout,
-                    "mha_activation": mha_config.activation,
-                }
-            )
-
-        # SpliceAI-specific parameters
-        if model_config.model_type.lower() in {
-            "spliceai",
-            "spliceai-large",
-            "spliceai-small",
-        }:
-            mlflow.log_params(
-                {
-                    "spliceai_channels": OmegaConf.select(
-                        model_config, "spliceai_channels", default=32
-                    ),
-                    "spliceai_kernel_size": OmegaConf.select(
-                        model_config, "spliceai_kernel_size", default=11
-                    ),
-                    "spliceai_blocks_per_dilation": OmegaConf.select(
-                        model_config, "spliceai_blocks_per_dilation", default=4
-                    ),
-                    "spliceai_context_length": OmegaConf.select(
-                        model_config, "spliceai_context_length", default=10000
-                    ),
-                }
-            )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # PEFT (Parameter-Efficient Fine-Tuning) config
-        # ─────────────────────────────────────────────────────────────────────
-        peft_cfg = OmegaConf.select(model_config, "peft", default=None)
-        if peft_cfg is not None:
-            mlflow.log_params(
-                {
-                    "peft_enabled": OmegaConf.select(
-                        peft_cfg, "enabled", default=False
-                    ),
-                    "peft_method": OmegaConf.select(peft_cfg, "method", default="lora"),
-                    "peft_target_modules": str(
-                        OmegaConf.select(peft_cfg, "target_modules", default="auto")
-                    ),
-                    "peft_r": OmegaConf.select(peft_cfg, "r", default=16),
-                    "peft_alpha": OmegaConf.select(peft_cfg, "alpha", default=32),
-                    "peft_dropout": OmegaConf.select(peft_cfg, "dropout", default=0.05),
-                    "peft_bias": OmegaConf.select(peft_cfg, "bias", default="none"),
-                }
-            )
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Logging config
-        # ─────────────────────────────────────────────────────────────────────
-        logging_config = OmegaConf.select(self.cfg, "logging", default=None)
-        if logging_config is not None:
-            mlflow.log_params(
-                {
-                    "logging_log_dir": OmegaConf.select(
-                        logging_config, "log_dir", default="./logs"
-                    ),
-                    "logging_enable_file_logging": OmegaConf.select(
-                        logging_config, "enable_file_logging", default=True
-                    ),
-                    "logging_log_level": OmegaConf.select(
-                        logging_config, "log_level", default="INFO"
-                    ),
-                    "logging_enable_distribution_logging": OmegaConf.select(
-                        logging_config, "enable_distribution_logging", default=False
-                    ),
-                    "logging_enable_timing_log": OmegaConf.select(
-                        logging_config, "enable_timing_log", default=False
-                    ),
-                    "logging_timing_log_interval": OmegaConf.select(
-                        logging_config, "timing_log_interval", default=100
-                    ),
-                }
-            )
-
-            # Filtering debug config
-            filter_debug_cfg = OmegaConf.select(
-                logging_config, "filtering_debug", default=None
-            )
-            if filter_debug_cfg is not None:
-                mlflow.log_params(
-                    {
-                        "filtering_debug_enabled": OmegaConf.select(
-                            filter_debug_cfg, "enabled", default=False
-                        ),
-                        "filtering_debug_max_examples_per_reason": OmegaConf.select(
-                            filter_debug_cfg, "max_examples_per_reason", default=5
-                        ),
-                        "filtering_debug_log_sequences": OmegaConf.select(
-                            filter_debug_cfg, "log_sequences", default=False
-                        ),
-                    }
-                )
-
-            # Memory management config
-            mem_mgmt_cfg = OmegaConf.select(
-                logging_config, "memory_management", default=None
-            )
-            if mem_mgmt_cfg is not None:
-                mlflow.log_params(
-                    {
-                        "memory_enable_aggressive_gc": OmegaConf.select(
-                            mem_mgmt_cfg, "enable_aggressive_gc", default=True
-                        ),
-                        "memory_gc_frequency": OmegaConf.select(
-                            mem_mgmt_cfg, "gc_frequency", default=100
-                        ),
-                        "memory_max_timing_samples": OmegaConf.select(
-                            mem_mgmt_cfg, "max_timing_samples", default=200
-                        ),
-                        "memory_clear_cache_frequency": OmegaConf.select(
-                            mem_mgmt_cfg, "clear_cache_frequency", default=500
-                        ),
-                        "memory_auc_sample_size": OmegaConf.select(
-                            mem_mgmt_cfg, "auc_sample_size", default=10000
-                        ),
-                        "memory_auc_batch_sample_size": OmegaConf.select(
-                            mem_mgmt_cfg, "auc_batch_sample_size", default=1000
-                        ),
-                    }
-                )
-
-        # Catch-all: log every leaf of the resolved config with a ``cfg.``
-        # prefix. Guarantees that nested blocks not covered by the explicit
-        # sections above (e.g., ``model.dynamic_chunker.*``) end up in MLflow.
-        self._log_full_config_params()
-
-        self.logger.info("📊 Hyperparameters logged to MLflow")
-
-    @staticmethod
-    def _truncate_mlflow_value(value: str, max_length: int = 250) -> str:
-        """Truncate a stringified value to MLflow's per-param value limit.
-
-        Args:
-            value (str): Stringified parameter value.
-            max_length (int): Maximum length retained. Defaults to 250
-                (MLflow's conservative default; newer servers allow more).
-
-        Returns:
-            str: ``value`` unchanged if shorter than ``max_length``; otherwise
-            ``value[: max_length - 4] + " ..."``.
-        """
-        if len(value) <= max_length:
-            return value
-        return value[: max_length - 4] + " ..."
-
-    def _flatten_omegaconf_for_mlflow(
-        self,
-        container: dict[str, Any] | list[Any] | tuple[Any, ...] | Any,
-        prefix: str = "",
-    ) -> dict[str, str]:
-        """Flatten a config container to MLflow-compatible dot-notation params.
-
-        Dicts are recursed with ``"."`` joiners. Lists and tuples are JSON-
-        encoded as a single value when all items are primitives, otherwise
-        recursed with numeric indices (``"foo.0.bar"``). ``None`` becomes the
-        literal string ``"null"``.
-
-        Args:
-            container (dict | list | tuple | Any): Plain Python container or
-                primitive, typically the result of
-                ``OmegaConf.to_container(cfg, resolve=False)``.
-            prefix (str): Dot-notation prefix built up during recursion.
-
-        Returns:
-            dict[str, str]: Mapping of flattened keys to stringified values.
-                Values are truncated to MLflow's param-value limit.
-        """
-        flat: dict[str, str] = {}
-        if isinstance(container, dict):
-            for key, value in container.items():
-                full_key = f"{prefix}.{key}" if prefix else str(key)
-                flat.update(self._flatten_omegaconf_for_mlflow(value, full_key))
-        elif isinstance(container, (list, tuple)):
-            all_primitive = all(
-                isinstance(item, (int, float, str, bool)) or item is None
-                for item in container
-            )
-            if not container or all_primitive:
-                flat[prefix] = self._truncate_mlflow_value(
-                    json.dumps(list(container), default=str)
-                )
-            else:
-                for idx, item in enumerate(container):
-                    flat.update(
-                        self._flatten_omegaconf_for_mlflow(item, f"{prefix}.{idx}")
-                    )
-        elif container is None:
-            flat[prefix] = "null"
-        else:
-            flat[prefix] = self._truncate_mlflow_value(str(container))
-        return flat
-
-    def _log_full_config_params(self) -> None:
-        """Log every leaf of ``self.cfg`` as flattened ``cfg.<dot.path>`` params.
-
-        Complements the explicit section-by-section ``mlflow.log_params`` calls
-        in :meth:`_log_hyperparameters` so that no config field gets silently
-        skipped when sections are added or renamed. Sensitive-looking leaves
-        (``webhook_url``, ``password``, ``secret``, ``api_key``, ``token``) are
-        omitted defensively.
-
-        Returns:
-            None
-        """
-        # resolve=False matches the convention elsewhere in this file —
-        # tolerates dangling interpolations (e.g., NeoBERT's nested
-        # ${model.model_options[${model.model_index}]} syntax).
-        config_container = OmegaConf.to_container(self.cfg, resolve=False)
-        flat_params = self._flatten_omegaconf_for_mlflow(config_container)
-
-        secret_substrings = (
-            "webhook_url",
-            "password",
-            "secret",
-            "api_key",
-            "token",
-        )
-        flat_params = {
-            f"cfg.{key}": value
-            for key, value in flat_params.items()
-            if not any(sub in key.lower() for sub in secret_substrings)
-        }
-
-        # MLflow's tracking server accepts up to 100 params per log_params call
-        # on conservative defaults.
-        batch_size = 100
-        param_items = list(flat_params.items())
-        for batch_start in range(0, len(param_items), batch_size):
-            batch = dict(param_items[batch_start : batch_start + batch_size])
-            mlflow.log_params(batch)
-
-        self.logger.info(
-            f"📊 Logged {len(flat_params)} flattened config params to MLflow"
-        )
 
     def _save_checkpoint(
         self,
@@ -2255,7 +1468,7 @@ class SplicingTrainer:
                 self.cfg,
                 run_name=self.run_name,
                 training_start_time=self.training_start_time,
-                mlflow_run_id=_active_mlflow_run_id(),
+                mlflow_run_id=None,
             ),
         }
 
@@ -2318,105 +1531,6 @@ class SplicingTrainer:
         steps_since_last = global_step - self.last_checkpoint_step
         return steps_since_last >= self.checkpoint_save_steps
 
-    def _cleanup_experiment_tracking(self) -> None:
-        """
-        Cleanup and finalize experiment tracking systems.
-        """
-        # Cleanup MLflow
-        if self.cfg_mlflow.enabled:
-            try:
-                # Log model as artifact if enabled
-                if self.cfg_mlflow.log_artifacts.model:
-                    most_recent_path = self.checkpoint_dir / "most_recent_model.pt"
-                    if most_recent_path.exists():
-                        # Log the checkpoint file
-                        mlflow.log_artifact(str(most_recent_path), "checkpoints")
-
-                        # Log model metadata as a JSON sidecar artifact instead of
-                        # using mlflow.pytorch.log_model, which transitively pulls
-                        # pytorch_lightning and torchvision (forbidden per CLAUDE.md).
-                        try:
-                            experiment_name = self.cfg_mlflow.experiment_name
-                            actual_model = self._get_actual_model()
-                            registered_name = f"{experiment_name}-{self.run_name}"
-                            model_info: dict[str, Any] = {
-                                "intended_registered_model_name": registered_name,
-                                "model_class": type(actual_model).__name__,
-                                "pip_requirements": [
-                                    "torch>=2.6.0",
-                                    "cloudpickle>=3.1.1",
-                                ],
-                                "input_example_shape": {
-                                    "input_ids": [
-                                        1,
-                                        actual_model.nt_token_max_length,
-                                    ],
-                                    "attention_mask": [
-                                        1,
-                                        actual_model.nt_token_max_length,
-                                    ],
-                                },
-                                "checkpoint_artifact": "checkpoints/most_recent_model.pt",
-                            }
-                            info_path = self.checkpoint_dir / "model_info.json"
-                            with open(info_path, "w", encoding="utf-8") as info_file:
-                                json.dump(model_info, info_file, indent=2)
-                            mlflow.log_artifact(str(info_path), "model")
-                            mlflow.set_tag(
-                                "intended_registered_model_name", registered_name
-                            )
-                            self.logger.info(
-                                "🤖 Model metadata logged to MLflow as JSON sidecar"
-                            )
-                        except (OSError, AttributeError, TypeError) as e:
-                            self.logger.warning(
-                                f"⚠️  Failed to log model metadata to MLflow: {e}"
-                            )
-                            self.logger.info(
-                                "✅ Model checkpoint logged to MLflow as artifact"
-                            )
-
-                        self.logger.info("📁 Model artifacts logged to MLflow")
-
-                # Log training logs as artifact if available
-                log_dir = self.checkpoint_dir / "logs"
-                log_file = log_dir / f"training_{self.training_start_time}.log"
-                if log_file.exists():
-                    mlflow.log_artifact(str(log_file), "logs")
-                    self.logger.info("📋 Training logs logged to MLflow")
-
-                # Log config file as artifact
-                try:
-                    # resolve=False — see _setup_mlflow.
-                    config_dict = OmegaConf.to_container(self.cfg, resolve=False)
-                    config_dict["run_metadata"] = {
-                        "run_name": self.run_name,
-                        "training_start_time": self.training_start_time,
-                        "checkpoint_dir": str(self.checkpoint_dir),
-                    }
-
-                    with tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".yaml", delete=False
-                    ) as f:
-                        yaml.dump(config_dict, f, default_flow_style=False)
-                        temp_config_path = f.name
-
-                    mlflow.log_artifact(temp_config_path, "config")
-                    os.unlink(temp_config_path)
-                    self.logger.info("📋 Config with run metadata logged to MLflow")
-                except Exception as e:
-                    self.logger.warning(f"⚠️  Failed to log config to MLflow: {e}")
-
-                # End MLflow run
-                mlflow.end_run()
-                self.logger.info("✅ MLflow logging completed and run ended")
-
-            except Exception as e:
-                self.logger.error(f"❌ Error during MLflow cleanup: {e}")
-                try:
-                    mlflow.end_run(status="FAILED")
-                except Exception:
-                    pass
 
     def _get_actual_model(self):
         """
@@ -2461,80 +1575,23 @@ class SplicingTrainer:
         # "caduceus" is here for the same reason as "transformer": it ships no
         # tokenizer and borrows the HyenaDNA one, whose ids its own
         # complement_map already implies (checked in _assert_caduceus_token_ids).
-        if self.model_type in {"hyenadna", "mamba3", "transformer", "caduceus"}:
-            for sequence_index, sequence in enumerate(sequences):
-                if len(sequence) != self.cfg.model.seq_length:
-                    self.logger.info(
-                        f"Sequence {sequence_index} has length {len(sequence)} "
-                        f"(expected {self.cfg.model.seq_length})"
-                    )
-            encoded = actual_model.tokenizer(
-                sequences,
-                return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=self.cfg.model.tokenizer_max_length,
-                return_offsets_mapping=False,
-                add_special_tokens=False,
-            )
-            input_ids = encoded["input_ids"].to(self.device)
-            attention_mask = None
-
-        elif self.model_type == "neobert":
-            # NeoBERT uses the project-local OverlappingKmerTokenizer for all
-            # tokenizer_type values (single_nucleotide=k1, overlapping_kmer=k6,
-            # dynamic_chunker=k1; the chunker groups nt-level ids after
-            # backbone embedding lookup, so the tokenizer itself is k1).
-            for sequence_index, sequence in enumerate(sequences):
-                if len(sequence) != self.cfg.model.seq_length:
-                    self.logger.info(
-                        f"Sequence {sequence_index} has length {len(sequence)} "
-                        f"(expected {self.cfg.model.seq_length})"
-                    )
-            encoded = actual_model.tokenizer(
-                sequences,
-                return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=self.cfg.model.tokenizer_max_length,
-                add_special_tokens=False,
-            )
-            input_ids = encoded["input_ids"].to(self.device)
-            skip_pad_mask = OmegaConf.select(
-                self.cfg, "model.neobert.skip_padding_mask", default=False
-            )
-            if skip_pad_mask:
-                attention_mask = None
-            else:
-                attention_mask = encoded["attention_mask"].to(self.device)
-        elif self.model_type == "modernbert":
-            # ModernBERT (feature 011) uses the project-local
-            # OverlappingKmerTokenizer for all tokenizer_type values, mirroring
-            # NeoBERT semantics (single_nucleotide=k1, overlapping_kmer=k6,
-            # dynamic_chunker=k1). HF ``ModernBertModel`` accepts an optional
-            # attention_mask; for the fixed-length splicing input there is no
-            # padding so we pass ``None`` and let the SDPA backend pick
-            # FlashAttention-2 automatically.
-            for sequence_index, sequence in enumerate(sequences):
-                if len(sequence) != self.cfg.model.seq_length:
-                    self.logger.info(
-                        f"Sequence {sequence_index} has length {len(sequence)} "
-                        f"(expected {self.cfg.model.seq_length})"
-                    )
-            encoded = actual_model.tokenizer(
-                sequences,
-                return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=self.cfg.model.tokenizer_max_length,
-                add_special_tokens=False,
-            )
-            input_ids = encoded["input_ids"].to(self.device)
-            attention_mask = None
-        else:
-            raise NotImplementedError(
-                f"Tokenization not implemented for model_type: {self.model_type}"
-            )
+        for sequence_index, sequence in enumerate(sequences):
+            if len(sequence) != self.cfg.model.seq_length:
+                self.logger.info(
+                    f"Sequence {sequence_index} has length {len(sequence)} "
+                    f"(expected {self.cfg.model.seq_length})"
+                )
+        encoded = actual_model.tokenizer(
+            sequences,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=self.cfg.model.tokenizer_max_length,
+            return_offsets_mapping=False,
+            add_special_tokens=False,
+        )
+        input_ids = encoded["input_ids"].to(self.device)
+        attention_mask = None
 
         return input_ids, attention_mask
 
@@ -2956,36 +2013,19 @@ class SplicingTrainer:
             else self._get_actual_model()
         )
 
-        if self.model_type in {
-            "hyenadna",
-            "mamba3",
-            "neobert",
-            "modernbert",
-            "transformer",
-            "caduceus",
-        }:
-            # BF16/FP16 autocast for the forward pass when configured via
-            # ``training.mixed_precision`` (dnaHNet paper uses BF16 mixed).
-            # ``cache_enabled=False`` because mamba_ssm's caches don't play
-            # well with autocast across calls; for plain forward-only it
-            # is unaffected.
-            with torch.autocast(
-                device_type="cuda",
-                dtype=self.amp_dtype if self.amp_enabled else torch.float32,
-                enabled=self.amp_enabled,
-            ):
-                cls_logits, aux_outputs = model_to_use(
-                    input_ids=ref_input_ids,
-                    attention_mask=attention_mask,
-                    features=features,
-                )
-            # Regression head was removed; reg_outputs always None for
-            # backwards-compatible call sites that still expect a 3-tuple.
-            return cls_logits, None, aux_outputs
-        else:
-            raise NotImplementedError(
-                f"Forward pass not implemented for model_type: {self.model_type}"
+        with torch.autocast(
+            device_type="cuda",
+            dtype=self.amp_dtype if self.amp_enabled else torch.float32,
+            enabled=self.amp_enabled,
+        ):
+            cls_logits, aux_outputs = model_to_use(
+                input_ids=ref_input_ids,
+                attention_mask=attention_mask,
+                features=features,
             )
+        # Regression head was removed; reg_outputs always None for
+        # backwards-compatible call sites that still expect a 3-tuple.
+        return cls_logits, None, aux_outputs
 
     def _normalize_label_shape(self, labels: torch.Tensor) -> torch.Tensor:
         """
@@ -3964,8 +3004,7 @@ class SplicingTrainer:
             else None
         )
         # Scale loss for gradient accumulation and backpropagate via the
-        # engine. DDPEngine forwards to autograd; DeepSpeedEngine routes
-        # through model_engine.backward to apply ZeRO bookkeeping.
+        # PyTorch distributed engine.
         loss_scale: float = 1.0 / max(1, self.grad_accumulation_steps)
         self.engine.backward(total_loss_tensor * loss_scale)
 
@@ -3980,12 +3019,7 @@ class SplicingTrainer:
         optimizer_step_performed = False
 
         if is_accumulation_boundary or is_last_microbatch:
-            # DeepSpeed handles gradient clipping via the JSON config
-            # (data-model.md entity 4); calling clip_grad_norm_ on
-            # ZeRO-sharded params would error.
-            if self.gradient_clipping_enabled and not isinstance(
-                self.engine, DeepSpeedEngine
-            ):
+            if self.gradient_clipping_enabled:
                 self._apply_gradient_clipping(batch_index)
             self.engine.step()
             self._accumulated_microbatches = 0
@@ -5573,16 +4607,6 @@ class SplicingTrainer:
                 "info",
                 f"🧪 Test metrics ({context}, {sample_info}):\n  {formatted}",
             )
-            if self.cfg_mlflow.enabled:
-                if trigger == "step" and global_step is not None:
-                    mlflow_step = global_step
-                else:
-                    current_epoch = epoch or 0
-                    mlflow_step = current_epoch * self.steps_per_epoch_optim
-                mlflow.log_metrics(
-                    {f"test/{k}": v for k, v in test_metrics.items()},
-                    step=mlflow_step,
-                )
 
     def _run_svdb_validation(self, epoch: int) -> dict[str, float]:
         """Score this epoch's checkpoint on SpliceVarDB.
@@ -5803,19 +4827,6 @@ class SplicingTrainer:
             if self.svdb_validation is not None:
                 self._restore_svdb_history(start_epoch)
 
-        self.slack_notifier.on_train_start(
-            {
-                "model_type": self.cfg.model.model_type,
-                "epochs": self.cfg.training.epochs,
-                "batch_size": self.cfg.training.batch_size,
-                "world_size": self.world_size,
-                "train_h5_path": OmegaConf.select(
-                    self.cfg, "data.train_h5_path", default="n/a"
-                ),
-                "start_epoch": start_epoch + 1,
-                "checkpoint_dir": str(self.checkpoint_dir),
-            }
-        )
 
         for epoch in range(start_epoch, self.cfg.training.epochs):
             self._current_epoch = epoch
@@ -5886,40 +4897,6 @@ class SplicingTrainer:
                 val_metrics.update(self._run_svdb_validation(epoch))
 
             # Log metrics to MLflow (master process only)
-            if is_master_process() and self.cfg_mlflow.enabled:
-                epoch_step = (epoch + 1) * self.steps_per_epoch_optim
-                current_lr = self.scheduler.get_last_lr()[0]
-                epoch_val_metrics = {f"val/{k}": v for k, v in val_metrics.items()}
-                epoch_val_metrics["train/learning_rate"] = current_lr
-                epoch_val_metrics["train/loss"] = train_metrics_epoch.get("loss", 0)
-                # Surface per-task train losses (auxiliary heads included)
-                # so MLflow charts can track classification, regression, and
-                # auxiliary loss curves alongside the combined total. The
-                # `mean_chunk_rate` key is present only when the dynamic
-                # chunker tokenizer is active (FR-024 / SC-006).
-                static_train_keys = (
-                    "classification_loss",
-                    "regression_loss",
-                    "aux_region_loss",
-                    "aux_exon_loss",
-                    "aux_phylop_loss",
-                    "mean_chunk_rate",
-                    "boundary_loss",
-                    "mean_boundary_prob",
-                )
-                for tm_key in static_train_keys:
-                    if tm_key in train_metrics_epoch:
-                        epoch_val_metrics[f"train/{tm_key}"] = train_metrics_epoch[
-                            tm_key
-                        ]
-                # Per-stage chunker diagnostics surface dynamically; keys
-                # are emitted only when the chunker reported per-stage F/G.
-                for tm_key, tm_val in train_metrics_epoch.items():
-                    if tm_key.startswith("mean_chunk_rate_stage") or tm_key.startswith(
-                        "mean_boundary_prob_stage"
-                    ):
-                        epoch_val_metrics[f"train/{tm_key}"] = tm_val
-                mlflow.log_metrics(epoch_val_metrics, step=epoch_step)
 
             log_only_master_process(
                 self.logger,
@@ -5942,18 +4919,6 @@ class SplicingTrainer:
                     stop_training = True
 
             current_lr = self.scheduler.get_last_lr()[0]
-            self.slack_notifier.on_epoch_end(
-                epoch=epoch,
-                total_epochs=self.cfg.training.epochs,
-                train_loss=float(train_metrics_epoch.get("loss", 0.0)),
-                val_metrics={k: float(v) for k, v in val_metrics.items()},
-                learning_rate=current_lr,
-            )
-            if is_new_best:
-                self.slack_notifier.on_best_model(
-                    epoch=epoch,
-                    best_val_loss=self._best_val_loss,
-                )
 
             stop_tensor = torch.tensor(
                 1 if (stop_training and is_master_process()) else 0,
@@ -6055,12 +5020,6 @@ class SplicingTrainer:
                 "info",
                 f"📊 Final test metrics:\n  {formatted_test_metrics}",
             )
-            if self.cfg_mlflow.enabled:
-                final_step = self.cfg.training.epochs * self.steps_per_epoch_optim
-                test_metrics_prefixed = {
-                    f"test/{k}": v for k, v in test_metrics.items()
-                }
-                mlflow.log_metrics(test_metrics_prefixed, step=final_step)
         elif len(self.test_loader) == 0:
             self.logger.info(
                 "Test loader is empty, skipping test evaluation and terminating..."
@@ -6107,8 +5066,6 @@ class SplicingTrainer:
             )
 
         # Log final test metrics and cleanup experiment tracking
-        if is_master_process():
-            self._cleanup_experiment_tracking()
 
         stopped_early = "stop_tensor" in locals() and bool(stop_tensor.item())
         end_status = "early_stopped" if stopped_early else "completed"
@@ -6123,7 +5080,6 @@ class SplicingTrainer:
             for key in ("loss", "auc_pr_acceptor", "auc_pr_donor"):
                 if key in test_metrics:
                     end_summary[f"test_{key}"] = f"{float(test_metrics[key]):.4f}"
-        self.slack_notifier.on_train_end(end_status, end_summary)
 
     def _save_best_model_state(self, reason: str) -> None:
         """Persist full training state as best checkpoint.
@@ -6147,7 +5103,7 @@ class SplicingTrainer:
                     self.cfg,
                     run_name=self.run_name,
                     training_start_time=self.training_start_time,
-                    mlflow_run_id=_active_mlflow_run_id(),
+                    mlflow_run_id=None,
                 ),
             }
             torch.save(state, self.best_model_path)
@@ -6359,7 +5315,6 @@ def train(
     try:
         trainer.train()
     except (RuntimeError, ValueError, FileNotFoundError, KeyboardInterrupt) as exc:
-        trainer.slack_notifier.on_train_error(exc)
         raise
     finally:
         # Cleanup distributed training

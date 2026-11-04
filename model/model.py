@@ -16,17 +16,12 @@ except ImportError:
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
-from peft import PeftModel
 from transformers import (
     AutoConfig,
     AutoModel,
     AutoTokenizer,
 )
 
-from model.bihyena_backbone import (
-    BiHyenaDNAModel,
-    load_causal_pretrained_weights,
-)
 from model.chunker import Dechunker, DynamicChunker, HierarchicalChunker
 from model.hyenadna.src import (
     HyenaDNAModel,
@@ -38,9 +33,6 @@ from model.layers import (
     ConvolutionalHead,
     DeepClassificationHead,
 )
-from model.mamba3_backbone import Mamba3Backbone
-from model.ngram_embedding import N_SYMBOL, NgramEmbedding
-from model.selfattn_backbone import SelfAttentionBackbone
 from utils.utils import (
     init_weights_factory,
     log_only_master_process,
@@ -83,13 +75,9 @@ def _resolve_mlm_fallback_config_source(
     return str(options[idx])
 
 
-# Caduceus ships no tokenizer. This is the single-nucleotide one every other
-# arm already uses, borrowed so token ids stay identical across arms.
-_HYENADNA_TOKENIZER_REPO = "LongSafari/hyenadna-medium-160k-seqlen-hf"
-
 class IssaSplice(nn.Module):
     """
-    IssaSplice class for predicting splicing effects using various backbone models.
+    SplicePath implementation, retaining the checkpoint-compatible class name.
     """
 
     def __init__(self, cfg: DictConfig | dict) -> None:
@@ -104,7 +92,7 @@ class IssaSplice(nn.Module):
                 - n_classes, backbone_output_dim, dropout_rate
                 - download, freeze_backbone, freeze_policy, partial_freeze_layers
                 - weight_dtype, backbone_type | model_type
-                - classification_head_type, peft, seq_length, etc.
+                - classification_head_type, seq_length, etc.
         """
         super().__init__()
 
@@ -184,19 +172,6 @@ class IssaSplice(nn.Module):
         )
         self.feature_proj: nn.Module | None = None
 
-        # Optional centred k-mer embedding (model/ngram_embedding.py) for the
-        # dynamic chunker. ``position: encoder`` (default) adds it inside the
-        # nt-level encoder before its second SSM block; ``chunker_input`` adds it
-        # to the nt embedding the chunker consumes, which chunk tokens are
-        # gathered from. Built in :meth:`_init_dynamic_chunker_if_enabled`; the
-        # block is kept only when ``enabled``.
-        ngram_cfg = OmegaConf.select(self.config, "ngram_embedding", default=None)
-        self.ngram_embedding_cfg = (
-            ngram_cfg
-            if ngram_cfg is not None and bool(ngram_cfg.get("enabled", False))
-            else None
-        )
-        self.ngram_input: nn.Module | None = None
 
         # 1. Initialize Backbone
         self.model = None
@@ -401,559 +376,32 @@ class IssaSplice(nn.Module):
             return torch.float16
 
     def _initialize_model(self) -> None:
-        """
-        Initialize and load the backbone model.
+        """Construct the paper's HyenaDNA backbone."""
+        self._initialize_hyenadna_model()
 
-        Raises:
-            Exception: If model loading fails.
-        """
-        try:
-            if self.backbone_type.lower() == "hyenadna":
-                self._initialize_hyenadna_model()
-                log_only_master_process(
-                    self.logger, "info", "Hyenadna model loaded successfully."
-                )
-            elif self.backbone_type.lower().startswith("spliceai"):
-                self._initialize_spliceai_model()
-                log_only_master_process(
-                    self.logger,
-                    "info",
-                    "SpliceAI model loaded successfully.",
-                )
-            elif self.backbone_type.lower() == "neobert":
-                self._initialize_neobert_model()
-                log_only_master_process(
-                    self.logger,
-                    "info",
-                    "NeoBERT model loaded successfully.",
-                )
-            elif self.backbone_type.lower() == "modernbert":
-                self._initialize_modernbert_model()
-                log_only_master_process(
-                    self.logger,
-                    "info",
-                    "ModernBERT model loaded successfully.",
-                )
-            elif self.backbone_type.lower() == "mamba3":
-                self._initialize_mamba3_model()
-                log_only_master_process(
-                    self.logger,
-                    "info",
-                    "Mamba-3 backbone loaded successfully.",
-                )
-            elif self.backbone_type.lower() == "caduceus":
-                self._initialize_caduceus_model()
-                log_only_master_process(
-                    self.logger,
-                    "info",
-                    "Caduceus (bidirectional Mamba) backbone loaded "
-                    "successfully; see the trunk log line for the init mode.",
-                )
-            elif self.backbone_type.lower() == "transformer":
-                self._initialize_transformer_model()
-                log_only_master_process(
-                    self.logger,
-                    "info",
-                    "Self-attention (RoPE Transformer) backbone loaded successfully.",
-                )
-            else:
-                raise ValueError(
-                    "Unsupported backbone_type: "
-                    f"{self.backbone_type}. Use"
-                    " 'hyenadna',"
-                    " 'spliceai',"
-                    " 'neobert',"
-                    " 'modernbert',"
-                    " or 'transformer'."
-                )
-        except Exception as e:
-            log_only_master_process(
-                self.logger, "info", f"Error occurred while loading model: {e}"
-            )
-            raise
-
-    def _initialize_spliceai_model(self) -> None:
-        """Initialize a SpliceAI backbone.
-
-        Extracts the model variant from ``model_name``
-        or ``backbone_type`` (e.g. ``spliceai_2k``).
-        Falls back to ``2k`` when no variant is found.
-        """
-        from model.spliceai import SpliceAI
-
-        model_variant = (
-            self.model_name.lower().replace("spliceai_", "").replace("spliceai", "")
-        )
-        if not model_variant:
-            model_variant = (
-                self.backbone_type.lower()
-                .replace("spliceai_", "")
-                .replace("spliceai", "")
-            )
-
-        valid = ["80nt", "400nt", "2k", "10k"]
-        if model_variant not in valid:
-            model_variant = "2k"
-
-        self.model = SpliceAI.from_preconfigured(model_variant)
-
-        return
 
     def _initialize_hyenadna_model(self) -> None:
-        """Initialize a HuggingFace HyenaDNA backbone.
-
-        Supports four modes:
-        1. Two-pass bidirectional (``bidirectional_mode='two_pass'``):
-           :class:`model.bihyena_backbone.BiHyenaDNAModel`, a causal
-           operator read forward and reversed per block. Optionally
-           warm-started from the released causal weights.
-        2. MLM pretrained (mlm_pretrained_path is set):
-           Loads backbone weights from MLM checkpoint.
-           Requires bidirectional=True.
-        3. Bidirectional random init
-           (mlm_pretrained_path is None,
-            mlm_fallback_config_source is set):
-           Random weight initialization with
-           bidirectional=True.
-        4. Standard causal (neither is set):
-           AutoModel.from_pretrained (unidirectional).
-
-        Raises:
-            ValueError: If ``bidirectional_mode='two_pass'`` is combined with
-                ``mlm_pretrained_path`` (two warm-start sources).
-        """
-        mlm_pretrained_path = getattr(self.config, "mlm_pretrained_path", None)
-        fallback_config_source = _resolve_mlm_fallback_config_source(self.config)
-        tokenizer_type = getattr(
-            self.config,
-            "tokenizer_type",
-            "single_nucleotide",
-        )
-
-        if mlm_pretrained_path and tokenizer_type == "overlapping_kmer":
-            raise ValueError(
-                "Cannot use overlapping k-mer tokenizer"
-                " with MLM pretrained weights. The MLM"
-                " checkpoint was trained with single-"
-                "nucleotide tokens (vocab_size mismatch)"
-                ". Use tokenizer_type: single_nucleotide"
-                " or set mlm_pretrained_path: null for"
-                " random initialization."
-            )
-
-        bidirectional_mode = str(getattr(self.config, "bidirectional_mode", "padding"))
-        if bidirectional_mode == "two_pass" and mlm_pretrained_path:
-            raise ValueError(
-                "bidirectional_mode='two_pass' cannot be combined with "
-                "mlm_pretrained_path: the two-pass trunk warm-starts from the "
-                "released causal checkpoint (model.hyena_pretrained_init), and "
-                "the MLM checkpoint was trained with the padding-bidirectional "
-                "operator. Pick one warm-start source."
-            )
-
-        if bidirectional_mode == "two_pass":
-            self._initialize_bihyena_two_pass(fallback_config_source)
-        elif mlm_pretrained_path:
-            self._initialize_hyenadna_from_mlm(mlm_pretrained_path)
-        elif fallback_config_source:
-            self._initialize_hyenadna_bidirectional_random(fallback_config_source)
-        else:
-            self.model = AutoModel.from_pretrained(
-                self.model_name, trust_remote_code=True
-            )
-            log_only_master_process(
-                self.logger,
-                "info",
-                "🔄 HyenaDNA initialized with bidirectional=False (causal mode)",
-            )
-
+        """Initialize the randomly initialized HyenaDNA trunk and tokenizer."""
+        config_source = _resolve_mlm_fallback_config_source(self.config)
+        if not config_source:
+            raise ValueError("The paper recipe must specify model_options and model_index.")
+        self._initialize_hyenadna_bidirectional_random(config_source)
         self.backbone_dim = int(self.backbone_output_dim)
         self.layer_norm = nn.LayerNorm(self.backbone_output_dim)
-
         self.hyenadna_pad_token_id = getattr(self.config, "pad_token_id", None)
         self.tokenizer = self._create_hyenadna_tokenizer()
 
-    def _create_hyenadna_tokenizer(
-        self,
-    ) -> AutoTokenizer | OverlappingKmerTokenizer:
-        """Create the appropriate tokenizer.
-
-        Returns single-nucleotide HF tokenizer by
-        default, or OverlappingKmerTokenizer when
-        ``tokenizer_type='overlapping_kmer'`` is set.
-        ``tokenizer_type='dynamic_chunker'`` also uses
-        the single-nucleotide HF tokenizer because the
-        chunker dynamically groups nt-level input_ids
-        after the backbone embedding lookup (DD-010,
-        DD-015); the chunker itself is not a tokenizer
-        in the usual sense.
-
-        Returns:
-            AutoTokenizer | OverlappingKmerTokenizer:
-                The tokenizer instance.
-        """
-        tokenizer_type = getattr(
-            self.config,
-            "tokenizer_type",
-            "single_nucleotide",
-        )
-        if tokenizer_type == "overlapping_kmer":
-            kmer_size = self.config.kmer_size
-            tokenizer = OverlappingKmerTokenizer(
-                k=kmer_size,
-                model_max_length=(self.config.tokenizer_max_length),
-            )
-            log_only_master_process(
-                self.logger,
-                "info",
-                f"🔤 Using overlapping {kmer_size}-mer "
-                f"tokenizer "
-                f"(vocab={tokenizer.vocab_size})",
-            )
-            return tokenizer
-
-        if tokenizer_type == "dynamic_chunker":
-            log_only_master_process(
-                self.logger,
-                "info",
-                "🔤 Using single-nucleotide HF tokenizer "
-                "for dynamic_chunker (chunker groups "
-                "nt-level input_ids dynamically)",
-            )
-
+    def _create_hyenadna_tokenizer(self) -> AutoTokenizer:
+        """Use the checkpoint recipe's single-nucleotide tokenizer."""
         return AutoTokenizer.from_pretrained(
-            self.model_name,
-            trust_remote_code=True,
-            model_max_length=(self.config.tokenizer_max_length),
+            self.model_name, trust_remote_code=True,
+            model_max_length=self.config.tokenizer_max_length,
         )
 
-    @staticmethod
-    def _compose_deepest_nt_offsets(
-        stage_outputs: "list",
-    ) -> torch.Tensor:
-        """Compose per-deepest-chunk within-window nt offsets across stages.
 
-        The main backbone sees the deepest (most compressed) chunk
-        sequence. Each stage's ``boundary_indices`` are positions in *that
-        stage's input* space: stage 0's input is the nt sequence, but
-        stage ``i>0``'s input is stage ``i-1``'s chunk sequence. To recover
-        the true within-window nt offset of every deepest chunk, start from
-        the deepest stage's boundary indices and gather back through each
-        earlier stage's boundary map until reaching nt space.
 
-        For a single-stage chunker this is a no-op (the deepest boundary
-        indices already live in nt space).
 
-        Args:
-            stage_outputs (list): Per-stage ``ChunkerOutputs`` (outer to
-                inner) from ``HierarchicalChunker.encode``.
 
-        Returns:
-            torch.Tensor: int64 ``(B, K_deepest)`` nt offsets, aligned with
-                the deepest chunk sequence fed to the backbone. Padded
-                chunks carry offset 0 (masked out of attention downstream).
-        """
-        # Start in the deepest stage's input space (= previous stage's
-        # chunk space, or nt for a single stage).
-        idx = stage_outputs[-1].boundary_indices  # (B, K_deepest)
-        # Walk outward: map indices through each earlier stage's boundary
-        # map. After gathering with stage s, idx lives in stage s's input
-        # space; when s reaches 0 that space is nt.
-        for stage in range(len(stage_outputs) - 2, -1, -1):
-            boundary_map = stage_outputs[stage].boundary_indices  # (B, K_stage)
-            idx = torch.gather(boundary_map, dim=1, index=idx)
-        return idx
-
-    def _initialize_mamba3_model(self) -> None:
-        """Initialize the Mamba-3 backbone.
-
-        Drop-in replacement for the HyenaDNA trunk in the "swap only the
-        mixer" line of ablations (see :mod:`model.mamba3_backbone`). Unlike
-        HyenaDNA's ``bidirectional=True`` path, which only delays a causal
-        kernel and gets its non-causality from wrap-around aliasing
-        (issue #106), this trunk's directionality is by construction:
-        ``model.mamba3.bidirectional`` (default ``True``) chooses between two
-        scans per block and one causal scan.
-
-        The nt tokenizer comes from the same
-        :meth:`_create_hyenadna_tokenizer` path so tokenization and vocab are
-        byte-identical to the HyenaDNA baseline. Width equals
-        ``base_backbone_output_dim``; depth and SSM shape come from the
-        ``model.mamba3`` config block, whose defaults are sized to sit just
-        below the HyenaDNA trunk's parameter budget.
-
-        Raises:
-            ValueError: If ``tokenizer_type`` is unsupported.
-        """
-        tokenizer_type = getattr(self.config, "tokenizer_type", "single_nucleotide")
-        if tokenizer_type not in (
-            "single_nucleotide",
-            "overlapping_kmer",
-            "dynamic_chunker",
-        ):
-            raise ValueError(
-                f"Unsupported tokenizer_type for mamba3 backbone: {tokenizer_type}."
-            )
-
-        self.tokenizer = self._create_hyenadna_tokenizer()
-
-        mamba3_cfg = getattr(self.config, "mamba3", None)
-
-        def _get(name: str, default: int) -> int:
-            """Read one Mamba-3 setting from the optional config block."""
-            if mamba3_cfg is None:
-                return default
-            return int(getattr(mamba3_cfg, name, default))
-
-        d_model = int(self.base_backbone_output_dim)
-        vocab_size = int(self.tokenizer.vocab_size)
-        padding_idx = getattr(self.tokenizer, "pad_token_id", None)
-
-        self.model = Mamba3Backbone(
-            vocab_size=vocab_size,
-            d_model=d_model,
-            n_layer=_get("n_layer", 8),
-            d_state=_get("d_state", 64),
-            d_conv=_get("d_conv", 4),
-            expand=_get("expand", 2),
-            headdim=_get("headdim", 64),
-            padding_idx=padding_idx,
-            layer_scale_init=(
-                float(getattr(mamba3_cfg, "layer_scale_init", 1e-4))
-                if mamba3_cfg is not None else 1e-4
-            ),
-            max_residual_absmax=(
-                float(getattr(mamba3_cfg, "max_residual_absmax", 1e4))
-                if mamba3_cfg is not None else 1e4
-            ),
-            bidirectional=(
-                bool(getattr(mamba3_cfg, "bidirectional", True))
-                if mamba3_cfg is not None else True
-            ),
-        )
-        # Every backbone initialiser must publish these two: the FC head reads
-        # ``backbone_dim`` and ``forward_features`` applies ``layer_norm``.
-        self.backbone_dim = int(self.backbone_output_dim)
-        self.layer_norm = nn.LayerNorm(self.backbone_output_dim)
-        self.hyenadna_pad_token_id = padding_idx
-
-        n_params = sum(p.numel() for p in self.model.parameters())
-        direction = "Bidirectional" if self.model.bidirectional else "Causal"
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"\U0001f9ec {direction} Mamba-3 backbone "
-            f"(d_model={d_model}, n_layer={_get('n_layer', 8)}, "
-            f"d_state={_get('d_state', 64)}, vocab={vocab_size}, "
-            f"params={n_params / 1e6:.3f}M)",
-        )
-
-        return
-
-    def _assert_caduceus_token_ids(self) -> None:
-        """Check the borrowed tokenizer agrees with Caduceus's own complement map.
-
-        Caduceus ships no tokenizer, so this arm feeds it HyenaDNA's ids. That is
-        only sound if the ids match what the pretrained embedding table was
-        trained on. The released config states the pairing indirectly through
-        ``complement_map``: whichever ids A and T carry must map to each other,
-        and so must C and G. Checking it here turns a silent 4-token permutation
-        -- which would look like a slightly worse model, not like a bug -- into a
-        startup failure.
-
-        Raises:
-            ValueError: If the tokenizer's ACGT ids are not complement-paired
-                under the checkpoint's own map.
-        """
-        cmap = getattr(self.model.config, "complement_map", None)
-        if not cmap:
-            return
-        cmap = {int(k): int(v) for k, v in cmap.items()}
-        ids = {b: self.tokenizer.convert_tokens_to_ids(b) for b in "ACGT"}
-        bad = [
-            f"{a}->{b} (id {ids[a]} maps to {cmap.get(ids[a])}, not {ids[b]})"
-            for a, b in (("A", "T"), ("T", "A"), ("C", "G"), ("G", "C"))
-            if cmap.get(ids[a]) != ids[b]
-        ]
-        if bad:
-            raise ValueError(
-                "Tokenizer ids disagree with the Caduceus checkpoint's "
-                "complement_map, so the pretrained embeddings would be read "
-                "through a permuted alphabet: " + "; ".join(bad)
-            )
-        log_only_master_process(
-            self.logger, "info",
-            f"Caduceus token ids verified against complement_map: {ids}",
-        )
-
-    def _initialize_caduceus_model(self) -> None:
-        """Initialize the DNA-pretrained Caduceus backbone (bidirectional Mamba).
-
-        Caduceus is the only Mamba-family model pretrained on genomic sequence,
-        which makes it the arm that separates two things the bi-Mamba-3 run
-        could not: whether Mamba is weaker than HyenaDNA on this task, or
-        whether it was simply trained from scratch while the HyenaDNA arms were
-        warm-started. It is therefore run the way the bi-HyenaDNA two-pass arm
-        is -- nt resolution, no dynamic chunker -- so the pretrained weights see
-        the input distribution they were trained on.
-
-        No tokenizer is built for it. Caduceus ships none, and its
-        ``complement_map`` (7<->10, 8<->9) fixes A=7, C=8, G=9, T=10, which is
-        exactly what this repo's HyenaDNA tokenizer already emits (LUT
-        ``[11, 7, 8, 9, 10]``). Reusing that tokenizer keeps token ids
-        byte-identical to every other arm.
-
-        Raises:
-            ValueError: If the loaded config carries no ``d_model``, or its
-                width disagrees with ``model.base_backbone_output_dim``.
-        """
-        from transformers import AutoModelForMaskedLM
-
-        # ``model.caduceus_pretrained_init`` selects the released weights. The
-        # random-init twin builds the same architecture from the same config and
-        # keeps every other knob, so (pretrained - random) isolates what the
-        # genomic pretraining contributed.
-        caduceus_pretrained_init = bool(
-            OmegaConf.select(self.config, "caduceus_pretrained_init", default=True)
-        )
-        if caduceus_pretrained_init:
-            mlm = AutoModelForMaskedLM.from_pretrained(
-                self.model_name, trust_remote_code=True
-            )
-        else:
-            mlm = AutoModelForMaskedLM.from_config(
-                AutoConfig.from_pretrained(self.model_name, trust_remote_code=True),
-                trust_remote_code=True,
-            )
-        self.model = mlm.caduceus
-        caduceus_config = mlm.config
-        d_model = getattr(caduceus_config, "d_model", None)
-        if d_model is None:
-            raise ValueError(
-                f"{self.model_name} config has no 'd_model'; cannot size the "
-                "downstream heads."
-            )
-        # The released width is fixed, so the config must declare it rather than
-        # be silently rewritten -- the heads and the hybrid branch are sized from
-        # base_backbone_output_dim before this runs.
-        if int(d_model) != int(self.base_backbone_output_dim):
-            raise ValueError(
-                f"{self.model_name} has d_model={int(d_model)} but "
-                f"model.base_backbone_output_dim is "
-                f"{int(self.base_backbone_output_dim)}; set them equal."
-            )
-        self.backbone_dim = int(self.backbone_output_dim)
-        self.layer_norm = nn.LayerNorm(self.backbone_dim)
-        # _create_hyenadna_tokenizer() reads self.model_name, which now points at
-        # the Caduceus repo -- and Caduceus ships no tokenizer. Borrow HyenaDNA's
-        # for the duration: its ids (A=7, C=8, G=9, T=10, N=11) are the ones
-        # Caduceus's own complement_map implies, so the embedding lookup is
-        # correct and every arm sees byte-identical token ids.
-        caduceus_repo, self.model_name = self.model_name, _HYENADNA_TOKENIZER_REPO
-        try:
-            self.tokenizer = self._create_hyenadna_tokenizer()
-        finally:
-            self.model_name = caduceus_repo
-        self._assert_caduceus_token_ids()
-        # The MLM head is dead weight here; only hidden states are consumed.
-        del mlm.lm_head
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"Caduceus d_model={self.backbone_dim} n_layer="
-            f"{getattr(caduceus_config, 'n_layer', '?')} rcps="
-            f"{getattr(caduceus_config, 'rcps', '?')} "
-            f"pretrained_init={caduceus_pretrained_init} "
-            f"params={sum(p.numel() for p in self.model.parameters()) / 1e6:.2f}M",
-        )
-
-    def _initialize_transformer_model(self) -> None:
-        """Initialize the self-attention (RoPE Transformer) backbone.
-
-        Drop-in replacement for the HyenaDNA main backbone used in the
-        "swap only the mixer" ablation: the dynamic chunker compresses
-        the nt input to ~K chunk tokens and this bidirectional Transformer
-        runs full self-attention over them (see
-        :mod:`model.selfattn_backbone`).
-
-        The nt tokenizer is created via the same
-        :meth:`_create_hyenadna_tokenizer` path so tokenization and vocab
-        are byte-identical to the HyenaDNA baseline (clean ablation). The
-        backbone width ``d_model`` equals ``base_backbone_output_dim``;
-        depth / heads / FFN come from the ``model.transformer`` config
-        block (defaults mirror HyenaDNA medium: 8 layers, d=256).
-
-        Raises:
-            ValueError: If the required ``model.transformer`` block is
-                missing, or ``tokenizer_type`` is unsupported.
-        """
-        tokenizer_type = getattr(self.config, "tokenizer_type", "single_nucleotide")
-        if tokenizer_type not in (
-            "single_nucleotide",
-            "overlapping_kmer",
-            "dynamic_chunker",
-        ):
-            raise ValueError(
-                f"Unsupported tokenizer_type for transformer backbone: "
-                f"{tokenizer_type}."
-            )
-
-        transformer_cfg = getattr(self.config, "transformer", None)
-        if transformer_cfg is None:
-            raise ValueError(
-                "model.transformer config block is required when "
-                "model_type='transformer' (num_hidden_layers, "
-                "num_attention_heads, intermediate_size, ...)."
-            )
-
-        # Reuse the HyenaDNA tokenizer so nt->id mapping and vocab match
-        # the baseline exactly (this backbone only swaps the mixer).
-        self.tokenizer = self._create_hyenadna_tokenizer()
-
-        # RoPE position keying: "chunk_index" (0..K-1, default) or "offset"
-        # (each chunk's within-window nt offset, composed from the chunker's
-        # boundary_indices). Offset RoPE reflects the true genomic spacing
-        # between chunks in attention; see _compose_deepest_nt_offsets.
-        self.transformer_rope_position_mode = str(
-            getattr(transformer_cfg, "rope_position_mode", "chunk_index")
-        )
-        if self.transformer_rope_position_mode not in ("chunk_index", "offset"):
-            raise ValueError(
-                "model.transformer.rope_position_mode must be 'chunk_index' or "
-                f"'offset'; got {self.transformer_rope_position_mode!r}."
-            )
-
-        d_model = int(self.base_backbone_output_dim)
-        vocab_size = int(self.tokenizer.vocab_size)
-        padding_idx = getattr(self.tokenizer, "pad_token_id", None)
-
-        self.model = SelfAttentionBackbone(
-            vocab_size=vocab_size,
-            d_model=d_model,
-            n_layer=int(transformer_cfg.num_hidden_layers),
-            n_head=int(transformer_cfg.num_attention_heads),
-            dim_feedforward=int(transformer_cfg.intermediate_size),
-            dropout=float(getattr(transformer_cfg, "dropout", 0.1)),
-            rope_base=float(getattr(transformer_cfg, "rope_theta", 10000.0)),
-            layer_norm_eps=float(getattr(transformer_cfg, "layer_norm_eps", 1e-5)),
-            padding_idx=padding_idx,
-        )
-
-        self.backbone_dim = int(self.backbone_output_dim)
-        self.layer_norm = nn.LayerNorm(self.backbone_output_dim)
-        self.hyenadna_pad_token_id = padding_idx
-
-        log_only_master_process(
-            self.logger,
-            "info",
-            "🧬 Self-attention backbone (RoPE, bidirectional) initialized "
-            f"(d_model={d_model}, n_layer={transformer_cfg.num_hidden_layers}, "
-            f"n_head={transformer_cfg.num_attention_heads}, "
-            f"ffn={transformer_cfg.intermediate_size}, vocab={vocab_size}, "
-            f"rope_position_mode={self.transformer_rope_position_mode}).",
-        )
-
-        return
 
     def _init_dynamic_chunker_if_enabled(self) -> None:
         """Instantiate DynamicChunker + Dechunker for dynamic-chunker tokenizer.
@@ -983,28 +431,9 @@ class IssaSplice(nn.Module):
                 f"Unsupported tokenizer_type: {tokenizer_type!r}. "
                 f"Supported: {valid_types}."
             )
-        ngram_cfg = getattr(self, "ngram_embedding_cfg", None)
         if tokenizer_type != "dynamic_chunker":
-            if ngram_cfg is not None:
-                raise ValueError(
-                    "model.ngram_embedding enters the dynamic chunker's nt-level "
-                    "encoder; it requires tokenizer_type='dynamic_chunker' "
-                    f"(got {tokenizer_type!r})."
-                )
             return
 
-        if self.backbone_type.lower() not in (
-            "hyenadna",
-            "mamba3",
-            "neobert",
-            "modernbert",
-            "transformer",
-        ):
-            raise ValueError(
-                "tokenizer_type='dynamic_chunker' is only supported with "
-                f"backbone_type in {{hyenadna, mamba3, neobert, modernbert, transformer}} "
-                f"(got '{self.backbone_type}')."
-            )
 
         if self.use_hybrid_backbone:
             log_only_master_process(
@@ -1051,49 +480,6 @@ class IssaSplice(nn.Module):
             nn.init.zeros_(self.feature_proj.weight)
             nn.init.zeros_(self.feature_proj.bias)
 
-        if ngram_cfg is not None:
-            position = str(ngram_cfg.get("position", "encoder"))
-            if position not in ("encoder", "chunker_input"):
-                raise ValueError(
-                    "model.ngram_embedding.position must be 'encoder' or "
-                    f"'chunker_input'; got {position!r}."
-                )
-            attach = getattr(chunkers[0].encoder, "set_ngram_embedding", None)
-            if position == "encoder" and attach is None:
-                raise ValueError(
-                    "model.ngram_embedding at position 'encoder' needs an SSM "
-                    "stage-0 encoder (mamba2 or mamba3); got "
-                    f"{chunkers[0].encoder_type!r}."
-                )
-            if not hasattr(self, "token_to_onehot_idx"):
-                raise ValueError(
-                    "model.ngram_embedding reads nt symbols through the "
-                    "tokenizer's one-hot map, which this model has not built."
-                )
-            ngram = NgramEmbedding(
-                hidden_dim=hidden_dim,
-                kmer_sizes=tuple(ngram_cfg.get("kmer_sizes", (3, 7, 9))),
-                table_dim=int(ngram_cfg.get("table_dim", 128)),
-                gated=bool(ngram_cfg.get("gated", True)),
-            )
-            if position == "encoder":
-                attach(ngram)
-                where = "before the second SSM block of the stage-0 encoder"
-            else:
-                self.ngram_input = ngram
-                where = (
-                    "to the nt embedding the chunker consumes (chunk tokens "
-                    "carry it to every stage and the trunk)"
-                )
-            table_params = sum(t.weight.numel() for t in ngram.tables)
-            log_only_master_process(
-                self.logger,
-                "info",
-                f"🧬 N-gram embedding enabled: centred k={ngram.kmer_sizes}, exact "
-                f"5^k tables x {ngram.tables[0].embedding_dim} "
-                f"({table_params / 1e6:.1f}M table parameters), "
-                f"{'gated' if ngram.gated else 'ungated'}, added {where}.",
-            )
 
         num_stages = self.hierarchical_chunker.num_stages
         per_stage_summary = ", ".join(
@@ -1343,107 +729,6 @@ class IssaSplice(nn.Module):
             )
         return embedding
 
-    def _initialize_bihyena_two_pass(self, config_source: str | None) -> None:
-        """Initialize the two-pass bidirectional HyenaDNA trunk (bi-HyenaDNA).
-
-        Keeps the Hyena operator strictly causal and obtains the second
-        direction by reading the reversed sequence through a weight-independent
-        twin of every block (see :mod:`model.bihyena_backbone`). Because every
-        parameter then has a causal counterpart, the trunk can warm-start from
-        the released LongSafari weights -- which the padding and ``k_rev``
-        bidirectional modes cannot do faithfully.
-
-        ``model.hyena_pretrained_init`` selects the warm start. When it is on,
-        ``max_seq_len`` is left at the checkpoint's own value: the Hyena
-        implicit filter is an MLP over a time grid normalised by
-        ``max_seq_len``, so overriding it to ``seq_length`` would evaluate the
-        pretrained filter on a 10.7x compressed grid and silently discard most
-        of what was loaded. The from-scratch arm keeps the project convention
-        (``max_seq_len = seq_length``) so it stays a clean twin of the
-        padding-bidirectional baseline.
-
-        Args:
-            config_source (str | None): HuggingFace model ID or local path for
-                the architecture config (and the warm-start weights).
-
-        Raises:
-            ValueError: If no config source is resolvable from
-                ``model_options[model_index]``.
-        """
-        if not config_source:
-            raise ValueError(
-                "bidirectional_mode='two_pass' needs model.model_options + "
-                "model.model_index to resolve the HyenaDNA architecture "
-                "(and the warm-start checkpoint when "
-                "model.hyena_pretrained_init is true)."
-            )
-
-        pretrained_init = bool(
-            OmegaConf.select(self.config, "hyena_pretrained_init", default=False)
-        )
-        if pretrained_init and self.backbone_onehot_input:
-            raise ValueError(
-                "hyena_pretrained_init=true with backbone_onehot_input=true "
-                "wastes most of the warm start: the one-hot projection bypasses "
-                "the pretrained token-embedding table, so the pretrained blocks "
-                "would receive a randomly projected input. Set "
-                "backbone_onehot_input=false to use the checkpoint's own "
-                "embedding lookup (tokenizer_type='single_nucleotide' already "
-                "gives the trunk full nt resolution without the chunker)."
-            )
-        config = AutoConfig.from_pretrained(config_source, trust_remote_code=True)
-        # The operator stays causal -- non-causality comes from the reversed
-        # pass, not from padding or an anti-causal kernel.
-        config.bidirectional = False
-        config.bidirectional_mode = "padding"
-        config.use_flash_fft = getattr(self.config, "use_flash_fft", False)
-        # ``model.hyena_checkpoint_max_seq_len`` decouples the time grid from the
-        # warm start. It defaults to the warm start (the grid the loaded filters
-        # were fitted on), and the random-init twin of a warm-started arm turns
-        # it on so that every tensor shape matches and only the values differ.
-        keep_checkpoint_grid = bool(
-            OmegaConf.select(
-                self.config, "hyena_checkpoint_max_seq_len", default=pretrained_init
-            )
-        )
-        if pretrained_init and not keep_checkpoint_grid:
-            raise ValueError(
-                "hyena_pretrained_init=true with "
-                "hyena_checkpoint_max_seq_len=false would evaluate the loaded "
-                "filters on a compressed time grid, discarding most of the warm "
-                "start. Leave hyena_checkpoint_max_seq_len unset."
-            )
-        if not keep_checkpoint_grid:
-            config.max_seq_len = self.config.seq_length
-
-        self.model = BiHyenaDNAModel(config)
-
-        if pretrained_init:
-            causal = AutoModel.from_pretrained(config_source, trust_remote_code=True)
-            causal_state = causal.state_dict()
-            stats = load_causal_pretrained_weights(self.model, causal_state)
-            del causal, causal_state
-            log_only_master_process(
-                self.logger,
-                "info",
-                "🧬 bi-HyenaDNA warm-started from causal "
-                f"{config_source}: {stats['copied']} tensors copied into both "
-                f"direction stacks, {stats['merge_kept']} merge projections "
-                "kept at mean init.",
-            )
-
-        n_params = sum(p.numel() for p in self.model.parameters())
-        log_only_master_process(
-            self.logger,
-            "info",
-            "✅ bi-HyenaDNA (two-pass) initialized "
-            f"(d_model={config.d_model}, n_layer={config.n_layer}, "
-            f"max_seq_len={config.max_seq_len}, "
-            f"pretrained_init={pretrained_init}, "
-            f"params={n_params:,})",
-        )
-
-        return
 
     def _initialize_hyenadna_bidirectional_random(self, config_source: str) -> None:
         """Initialize bidirectional HyenaDNA with random weights.
@@ -1525,614 +810,12 @@ class IssaSplice(nn.Module):
 
         return
 
-    def _initialize_hyenadna_from_mlm(self, mlm_checkpoint_path: str) -> None:
-        """
-        Initialize HyenaDNA backbone from MLM pretrained checkpoint.
-        Initializes HyenaDNAModel backbone directly and loads only
-        backbone weights from the MLM checkpoint state_dict.
-        Supports two modes:
-        1. With config.json: Loads config directly from checkpoint directory.
-        2. Without config.json: Uses mlm_fallback_config_source from model config
-           to load the original pretrained model's config.
 
-        Args:
-            mlm_checkpoint_path (str): Path to MLM checkpoint directory or
-                pytorch_model.bin file.
 
-        Raises:
-            FileNotFoundError: If checkpoint weights not found.
-            ValueError: If config.json is missing and mlm_fallback_config_source
-                is not provided.
-        """
-        # Determine checkpoint directory and weights path
-        if mlm_checkpoint_path.endswith(".bin"):
-            checkpoint_dir = os.path.dirname(mlm_checkpoint_path)
-            weights_path = mlm_checkpoint_path
-        else:
-            checkpoint_dir = mlm_checkpoint_path
-            weights_path = os.path.join(checkpoint_dir, "pytorch_model.bin")
 
-        if not os.path.exists(weights_path):
-            raise FileNotFoundError(f"MLM checkpoint not found: {weights_path}")
 
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"🧬 Loading HyenaDNA from MLM checkpoint: {weights_path}",
-        )
 
-        # Check if config.json exists in checkpoint directory
-        config_path = os.path.join(checkpoint_dir, "config.json")
-        has_config = os.path.exists(config_path)
 
-        # Get fallback config source from model config (derived from
-        # model_options[model_index]; see _resolve_mlm_fallback_config_source).
-        fallback_config_source = _resolve_mlm_fallback_config_source(self.config)
-
-        if has_config:
-            # config.json exists - load directly
-            log_only_master_process(
-                self.logger,
-                "info",
-                f"Loading config from {config_path}",
-            )
-            config = AutoConfig.from_pretrained(checkpoint_dir, trust_remote_code=True)
-        else:
-            # Fallback to original pretrained model's config
-            if fallback_config_source is None:
-                raise ValueError(
-                    f"❌ config.json not found at {config_path} and "
-                    "model_options/model_index are not set in model config "
-                    "(no fallback HF id can be derived). Please set "
-                    "`model.model_options` and `model.model_index` to the "
-                    "original pretrained model ID list and the desired "
-                    "entry (e.g., 'LongSafari/hyenadna-small-32k-seqlen-hf')."
-                )
-            log_only_master_process(
-                self.logger,
-                "info",
-                f"⚠️  config.json not found. Using fallback: {fallback_config_source}",
-            )
-            config = AutoConfig.from_pretrained(
-                fallback_config_source, trust_remote_code=True
-            )
-
-        # Ensure bidirectional mode for splicing prediction
-        config.bidirectional = True
-        # "padding" keeps the legacy (upstream) operator; "k_rev" enables the
-        # anti-causal companion kernel that actually delivers future context.
-        config.bidirectional_mode = getattr(
-            self.config, "bidirectional_mode", "padding"
-        )
-
-        # Load weights to infer vocab_size
-        state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
-
-        # Infer vocab_size from checkpoint's lm_head.weight if using fallback config
-        if not has_config and "lm_head.weight" in state_dict:
-            ckpt_vocab_size = state_dict["lm_head.weight"].shape[0]
-            if config.vocab_size != ckpt_vocab_size:
-                log_only_master_process(
-                    self.logger,
-                    "info",
-                    f"⚠️  Overriding vocab_size: {config.vocab_size} → "
-                    f"{ckpt_vocab_size} (from checkpoint)",
-                )
-                config.vocab_size = ckpt_vocab_size
-
-        # Initialize backbone directly (skip lm_head allocation)
-        self.model = HyenaDNAModel(config)
-
-        # Filter backbone weights from MLM checkpoint
-        hyena_state_dict = {
-            k.replace("hyena.", ""): v
-            for k, v in state_dict.items()
-            if k.startswith("hyena.")
-        }
-
-        # Load backbone weights
-        load_result = self.model.load_state_dict(hyena_state_dict, strict=False)
-
-        if load_result.missing_keys:
-            log_only_master_process(
-                self.logger,
-                "debug",
-                f"Missing keys: {load_result.missing_keys}",
-            )
-        if load_result.unexpected_keys:
-            log_only_master_process(
-                self.logger,
-                "debug",
-                f"Unexpected keys: {load_result.unexpected_keys}",
-            )
-
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"✅ Loaded {len(hyena_state_dict)} backbone weights (bidirectional=True)",
-        )
-
-        return
-
-    def _initialize_neobert_model(self) -> None:
-        """Initialize the NeoBERT backbone (feature 009).
-
-        Validates the NeoBERT-specific config keys, builds a NeoBERT
-        backbone, and provisions the splicing-domain tokenizer.
-
-        Random init is the v1 path (FR-001 / FR-002). MLM warm-start
-        (FR-007 / FR-008) is delegated to ``_initialize_neobert_from_mlm``
-        when ``mlm_pretrained_path`` is set.
-
-        Raises:
-            NotImplementedError: PEFT enabled (FR-018), or
-                ``tokenizer_type='dynamic_chunker'`` (FR-006).
-            ValueError: ``seq_length > max_position_embeddings`` (FR-009), or
-                ``hidden_size != base_backbone_output_dim`` (C-002).
-        """
-        from model.neobert import NeoBERTConfig, NeoBERTModel
-
-        peft_cfg = getattr(self.config, "peft", None)
-        if peft_cfg is not None and getattr(peft_cfg, "enabled", False):
-            raise NotImplementedError(
-                "PEFT support for NeoBERT backbone is not implemented in v1. "
-                "Set peft.enabled=false. PEFT integration is tracked as a "
-                "follow-up feature."
-            )
-
-        tokenizer_type = getattr(self.config, "tokenizer_type", "single_nucleotide")
-        if tokenizer_type not in (
-            "single_nucleotide",
-            "overlapping_kmer",
-            "dynamic_chunker",
-        ):
-            raise ValueError(
-                f"Unsupported tokenizer_type for NeoBERT: {tokenizer_type}. "
-                "Use single_nucleotide, overlapping_kmer, or dynamic_chunker."
-            )
-
-        neobert_cfg = getattr(self.config, "neobert", None)
-        if neobert_cfg is None:
-            raise ValueError(
-                "model.neobert config block is required when "
-                "model_type='neobert'. See contracts/config-schema.md C-002."
-            )
-
-        max_pos = int(neobert_cfg.max_position_embeddings)
-        if self.seq_length > max_pos:
-            raise ValueError(
-                f"seq_length ({self.seq_length}) exceeds "
-                f"model.neobert.max_position_embeddings ({max_pos}). "
-                "Increase max_position_embeddings."
-            )
-
-        hidden_size = int(neobert_cfg.hidden_size)
-        if hidden_size != self.base_backbone_output_dim:
-            raise ValueError(
-                f"model.neobert.hidden_size ({hidden_size}) must equal "
-                f"model.base_backbone_output_dim ({self.base_backbone_output_dim})."
-            )
-
-        self.tokenizer = self._create_neobert_tokenizer(tokenizer_type)
-
-        config = NeoBERTConfig(
-            hidden_size=hidden_size,
-            num_hidden_layers=int(neobert_cfg.num_hidden_layers),
-            num_attention_heads=int(neobert_cfg.num_attention_heads),
-            intermediate_size=int(neobert_cfg.intermediate_size),
-            norm_eps=float(neobert_cfg.rms_norm_eps),
-            vocab_size=int(self.tokenizer.vocab_size),
-            pad_token_id=int(getattr(self.tokenizer, "pad_token_id", 0) or 0),
-            max_length=max_pos,
-            rope_theta=float(neobert_cfg.rope_theta),
-            attention_backend=str(neobert_cfg.attention_backend),
-        )
-
-        mlm_pretrained_path = getattr(self.config, "mlm_pretrained_path", None)
-        if mlm_pretrained_path:
-            self._initialize_neobert_from_mlm(mlm_pretrained_path, config)
-        else:
-            self.model = NeoBERTModel(config)
-            log_only_master_process(
-                self.logger,
-                "info",
-                f"NeoBERT random init (hidden={hidden_size}, "
-                f"layers={config.num_hidden_layers}, "
-                f"heads={config.num_attention_heads}, "
-                f"vocab={config.vocab_size}, "
-                f"max_pos={config.max_length}, "
-                f"backend={config.attention_backend}).",
-            )
-
-        self.backbone_dim = int(self.backbone_output_dim)
-        self.layer_norm = nn.LayerNorm(self.backbone_output_dim)
-        self.hyenadna_pad_token_id = config.pad_token_id
-
-        return
-
-    def _create_neobert_tokenizer(
-        self, tokenizer_type: str
-    ) -> OverlappingKmerTokenizer:
-        """Create the NeoBERT tokenizer.
-
-        All tokenizer types use the repo-local
-        ``OverlappingKmerTokenizer`` so the splicing codebase is
-        self-contained (no HF download required).
-        ``single_nucleotide`` forces k=1; ``overlapping_kmer`` reads
-        ``self.config.kmer_size`` (e.g. 6); ``dynamic_chunker`` also
-        forces k=1 because the chunker groups nt-level ids after
-        the backbone embedding lookup (DD-015).
-
-        Args:
-            tokenizer_type (str): One of ``single_nucleotide``,
-                ``overlapping_kmer``, or ``dynamic_chunker``.
-
-        Returns:
-            OverlappingKmerTokenizer: The configured tokenizer.
-        """
-        if tokenizer_type in ("single_nucleotide", "dynamic_chunker"):
-            kmer_size = 1
-        else:
-            kmer_size = int(self.config.kmer_size)
-
-        tokenizer = OverlappingKmerTokenizer(
-            k=kmer_size,
-            model_max_length=int(self.config.tokenizer_max_length),
-        )
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"NeoBERT tokenizer: {tokenizer_type} "
-            f"(k={kmer_size}, vocab={tokenizer.vocab_size}).",
-        )
-        return tokenizer
-
-    def _initialize_neobert_from_mlm(
-        self,
-        mlm_checkpoint_path: str,
-        fallback_config: "NeoBERTConfig",
-    ) -> None:
-        """Warm-start NeoBERT backbone from a DNA MLM checkpoint.
-
-        Mirrors ``_initialize_hyenadna_from_mlm`` semantics (R-006):
-        load ``pytorch_model.bin`` from the checkpoint dir or file path,
-        strip ``lm_head.*`` / decoder prefixes, and call
-        ``NeoBERTModel.load_state_dict(strict=False)``. Reports
-        missing/unexpected key counts via the master-rank logger.
-
-        When the checkpoint dir lacks ``config.json``, falls back to
-        either ``mlm_fallback_config_source`` (HF id or local
-        ``NeoBERTConfig`` directory) or the in-memory ``fallback_config``
-        built from the YAML block.
-
-        Args:
-            mlm_checkpoint_path (str): Path to checkpoint directory or
-                ``pytorch_model.bin`` file.
-            fallback_config (NeoBERTConfig): Architecture config used
-                when neither ``config.json`` nor ``mlm_fallback_config_source``
-                is available.
-
-        Raises:
-            FileNotFoundError: Checkpoint weights not found.
-            ValueError: vocab size mismatch between checkpoint and current
-                tokenizer (contracts C-008 message).
-        """
-        from model.neobert import NeoBERTConfig, NeoBERTModel
-
-        if mlm_checkpoint_path.endswith(".bin"):
-            checkpoint_dir = os.path.dirname(mlm_checkpoint_path)
-            weights_path = mlm_checkpoint_path
-        else:
-            checkpoint_dir = mlm_checkpoint_path
-            weights_path = os.path.join(checkpoint_dir, "pytorch_model.bin")
-
-        if not os.path.exists(weights_path):
-            raise FileNotFoundError(f"NeoBERT MLM checkpoint not found: {weights_path}")
-
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"Loading NeoBERT from MLM checkpoint: {weights_path}",
-        )
-
-        config_path = os.path.join(checkpoint_dir, "config.json")
-        has_config = os.path.exists(config_path)
-        fallback_source = _resolve_mlm_fallback_config_source(self.config)
-
-        if has_config:
-            log_only_master_process(
-                self.logger, "info", f"Loading NeoBERT config from {config_path}"
-            )
-            config = NeoBERTConfig.from_pretrained(checkpoint_dir)
-        elif fallback_source:
-            log_only_master_process(
-                self.logger,
-                "info",
-                f"NeoBERT config.json not found; using fallback: {fallback_source}",
-            )
-            config = NeoBERTConfig.from_pretrained(fallback_source)
-        else:
-            log_only_master_process(
-                self.logger,
-                "info",
-                "NeoBERT config.json not found and no model_options/model_index; "
-                "using YAML-derived NeoBERTConfig.",
-            )
-            config = fallback_config
-
-        state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
-
-        # Vocab mismatch check — checkpoint embeddings must match the
-        # currently configured tokenizer vocab. NeoBERT uses
-        # ``encoder.weight`` for token embeddings (see modeling_neobert.py).
-        ckpt_vocab = None
-        for key in ("encoder.weight", "model.encoder.weight"):
-            if key in state_dict:
-                ckpt_vocab = state_dict[key].shape[0]
-                break
-        if ckpt_vocab is not None and ckpt_vocab != self.tokenizer.vocab_size:
-            raise ValueError(
-                f"vocab size mismatch — checkpoint: {ckpt_vocab}, current "
-                f"tokenizer: {self.tokenizer.vocab_size}. Ensure tokenizer_type "
-                "matches the pretraining setup."
-            )
-
-        # Sync config vocab/pad with the tokenizer to avoid an embedding
-        # shape mismatch when instantiating from a fallback config.
-        config.vocab_size = int(self.tokenizer.vocab_size)
-        config.pad_token_id = int(getattr(self.tokenizer, "pad_token_id", 0) or 0)
-
-        self.model = NeoBERTModel(config)
-
-        # Drop LM head / decoder weights — splicing trains its own heads.
-        # ``model.`` prefix appears when the checkpoint was saved from
-        # NeoBERTLMHead (which wraps NeoBERT as ``self.model``).
-        backbone_state: dict[str, torch.Tensor] = {}
-        for key, value in state_dict.items():
-            if key.startswith("decoder."):
-                continue
-            if key.startswith("model."):
-                backbone_state[key[len("model.") :]] = value
-            else:
-                backbone_state[key] = value
-
-        load_result = self.model.load_state_dict(backbone_state, strict=False)
-
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"NeoBERT MLM warm-start: loaded {len(backbone_state)} entries "
-            f"(missing={len(load_result.missing_keys)}, "
-            f"unexpected={len(load_result.unexpected_keys)}).",
-        )
-
-        return
-
-    def _initialize_modernbert_model(self) -> None:
-        """Initialize the ModernBERT backbone (feature 011).
-
-        Validates the ModernBERT-specific config keys, builds an HF
-        ``ModernBertModel`` via ``transformers >= 4.48`` (4.53.1 verified
-        in research R-001), and provisions the splicing-domain tokenizer.
-
-        Random init is the only v1 path (FR-019). MLM warm-start and PEFT
-        are explicitly rejected here per contracts/config-schema.md C-006.
-
-        Raises:
-            NotImplementedError: PEFT enabled (FR-016).
-            ValueError: ``mlm_pretrained_path`` truthy (FR-019),
-                ``seq_length > max_position_embeddings`` (FR-007),
-                ``hidden_size != base_backbone_output_dim`` (FR-004),
-                or unsupported ``tokenizer_type``.
-        """
-        from transformers import ModernBertConfig, ModernBertModel
-
-        peft_cfg = getattr(self.config, "peft", None)
-        if peft_cfg is not None and getattr(peft_cfg, "enabled", False):
-            raise NotImplementedError(
-                "PEFT support for ModernBERT backbone is not implemented "
-                "in v1. Set peft.enabled=false. PEFT integration is "
-                "tracked as a follow-up feature."
-            )
-
-        mlm_pretrained_path = getattr(self.config, "mlm_pretrained_path", None)
-        if mlm_pretrained_path:
-            raise ValueError(
-                "mlm_pretrained_path is not supported with ModernBERT "
-                "backbone in v1. Set mlm_pretrained_path=null for random "
-                "init. MLM warm-start is tracked as a follow-up feature."
-            )
-
-        tokenizer_type = getattr(self.config, "tokenizer_type", "single_nucleotide")
-        if tokenizer_type not in (
-            "single_nucleotide",
-            "overlapping_kmer",
-            "dynamic_chunker",
-        ):
-            raise ValueError(
-                f"Unsupported tokenizer_type for ModernBERT: {tokenizer_type}. "
-                "Use single_nucleotide, overlapping_kmer, or dynamic_chunker."
-            )
-
-        modernbert_cfg = getattr(self.config, "modernbert", None)
-        if modernbert_cfg is None:
-            raise ValueError(
-                "model.modernbert config block is required when "
-                "model_type='modernbert'. See contracts/config-schema.md C-002."
-            )
-
-        max_pos = int(modernbert_cfg.max_position_embeddings)
-        if self.seq_length > max_pos:
-            raise ValueError(
-                f"seq_length ({self.seq_length}) exceeds "
-                f"model.modernbert.max_position_embeddings ({max_pos}). "
-                "Increase max_position_embeddings."
-            )
-
-        hidden_size = int(modernbert_cfg.hidden_size)
-        if hidden_size != self.base_backbone_output_dim:
-            raise ValueError(
-                f"model.modernbert.hidden_size ({hidden_size}) must equal "
-                f"model.base_backbone_output_dim "
-                f"({self.base_backbone_output_dim})."
-            )
-
-        self.tokenizer = self._create_modernbert_tokenizer(tokenizer_type)
-
-        # Resolve attention backend. HF default is "eager" which materialises
-        # the full O(L^2) attention matrix per layer and applies the local-
-        # attention sliding-window mask post-hoc; this defeats ModernBERT's
-        # claimed efficiency. Prefer "flash_attention_2" (requires the
-        # ``flash_attn`` package) for native sliding-window support, falling
-        # back to "sdpa" when flash_attn is unavailable.
-        attn_implementation = self._resolve_modernbert_attn_implementation(
-            getattr(modernbert_cfg, "attn_implementation", "auto")
-        )
-
-        config = ModernBertConfig(
-            hidden_size=hidden_size,
-            num_hidden_layers=int(modernbert_cfg.num_hidden_layers),
-            num_attention_heads=int(modernbert_cfg.num_attention_heads),
-            intermediate_size=int(modernbert_cfg.intermediate_size),
-            max_position_embeddings=max_pos,
-            global_rope_theta=float(modernbert_cfg.global_rope_theta),
-            local_rope_theta=float(modernbert_cfg.local_rope_theta),
-            local_attention=int(modernbert_cfg.local_attention),
-            mlp_dropout=float(getattr(modernbert_cfg, "mlp_dropout", 0.0)),
-            attention_dropout=float(getattr(modernbert_cfg, "attention_dropout", 0.0)),
-            embedding_dropout=float(getattr(modernbert_cfg, "embedding_dropout", 0.0)),
-            reference_compile=bool(getattr(modernbert_cfg, "reference_compile", False)),
-            vocab_size=int(self.tokenizer.vocab_size),
-            pad_token_id=int(getattr(self.tokenizer, "pad_token_id", 0) or 0),
-            attn_implementation=attn_implementation,
-        )
-
-        self.model = ModernBertModel(config)
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"ModernBERT random init (hidden={hidden_size}, "
-            f"layers={config.num_hidden_layers}, "
-            f"heads={config.num_attention_heads}, "
-            f"vocab={config.vocab_size}, "
-            f"max_pos={config.max_position_embeddings}, "
-            f"local_attention={config.local_attention}, "
-            f"attn_impl={attn_implementation}).",
-        )
-
-        self.backbone_dim = int(self.backbone_output_dim)
-        self.layer_norm = nn.LayerNorm(self.backbone_output_dim)
-        self.hyenadna_pad_token_id = config.pad_token_id
-
-        return
-
-    def _resolve_modernbert_attn_implementation(self, requested: str) -> str:
-        """Resolve the ModernBERT attention backend.
-
-        ModernBERT's local attention sliding window is only honoured natively
-        when ``attn_implementation="flash_attention_2"`` (requires the
-        ``flash_attn`` package). With ``"sdpa"`` the local mask is applied as
-        post-hoc multiplication after a full O(L^2) attention computation,
-        which negates the architectural memory advantage. ``"eager"`` is the
-        worst case (materialises the full attention matrix in pure PyTorch).
-
-        Resolution rules (FR-021):
-          - ``"auto"`` (default) — pick ``flash_attention_2`` if the
-            ``flash_attn`` package is importable, otherwise ``sdpa`` and warn.
-          - ``"flash_attention_2"`` — fail loudly if ``flash_attn`` is not
-            installed (no silent downgrade).
-          - ``"sdpa"`` / ``"eager"`` — pass through.
-
-        Args:
-            requested (str): User-supplied value from
-                ``model.modernbert.attn_implementation``. One of
-                ``"auto"``, ``"flash_attention_2"``, ``"sdpa"``, ``"eager"``.
-
-        Returns:
-            str: The resolved backend name accepted by ``ModernBertConfig``.
-
-        Raises:
-            ValueError: ``requested`` is not one of the four allowed values.
-            ImportError: ``requested == "flash_attention_2"`` but
-                ``flash_attn`` is not importable.
-        """
-        allowed = {"auto", "flash_attention_2", "sdpa", "eager"}
-        if requested not in allowed:
-            raise ValueError(
-                f"model.modernbert.attn_implementation must be one of "
-                f"{sorted(allowed)}; got {requested!r}."
-            )
-
-        try:
-            import flash_attn  # noqa: F401
-
-            flash_attn_available = True
-        except ImportError:
-            flash_attn_available = False
-
-        cuda_available = torch.cuda.is_available()
-
-        if requested == "flash_attention_2" and not flash_attn_available:
-            raise ImportError(
-                "model.modernbert.attn_implementation='flash_attention_2' "
-                "requires the flash_attn package. Install it with "
-                "`MAX_JOBS=4 uv pip install flash-attn --no-build-isolation` "
-                "or set attn_implementation='auto'/'sdpa' to fall back."
-            )
-
-        if requested == "auto":
-            if flash_attn_available and cuda_available:
-                return "flash_attention_2"
-            if not flash_attn_available:
-                reason = "flash_attn not installed"
-            else:
-                reason = "CUDA not available (flash_attention_2 is GPU-only)"
-            log_only_master_process(
-                self.logger,
-                "warning",
-                f"ModernBERT: {reason}; attn_implementation auto-resolved "
-                "to 'sdpa'. flash_attention_2 yields 5-10x speedup at "
-                "L>=8k on CUDA when flash_attn is installed.",
-            )
-            return "sdpa"
-
-        return requested
-
-    def _create_modernbert_tokenizer(
-        self, tokenizer_type: str
-    ) -> OverlappingKmerTokenizer:
-        """Create the ModernBERT tokenizer.
-
-        All tokenizer types use the repo-local ``OverlappingKmerTokenizer``
-        so the splicing codebase is self-contained (no HF download
-        required). ``single_nucleotide`` forces k=1; ``overlapping_kmer``
-        reads ``self.config.kmer_size`` (e.g. 6); ``dynamic_chunker`` also
-        forces k=1 because the chunker groups nt-level ids after the
-        backbone embedding lookup.
-
-        Args:
-            tokenizer_type (str): One of ``single_nucleotide``,
-                ``overlapping_kmer``, or ``dynamic_chunker``.
-
-        Returns:
-            OverlappingKmerTokenizer: The configured tokenizer.
-        """
-        if tokenizer_type in ("single_nucleotide", "dynamic_chunker"):
-            kmer_size = 1
-        else:
-            kmer_size = int(self.config.kmer_size)
-
-        tokenizer = OverlappingKmerTokenizer(
-            k=kmer_size,
-            model_max_length=int(self.config.tokenizer_max_length),
-        )
-        log_only_master_process(
-            self.logger,
-            "info",
-            f"ModernBERT tokenizer: {tokenizer_type} "
-            f"(k={kmer_size}, vocab={tokenizer.vocab_size}).",
-        )
-        return tokenizer
 
     def _create_token_to_onehot_map(self) -> None:
         """Build token-ID to one-hot channel index map.
@@ -2340,19 +1023,6 @@ class IssaSplice(nn.Module):
         """
         classification_head_type = self.config.classification_head_type
 
-        if self.backbone_type.lower() not in (
-            "hyenadna",
-            "mamba3",
-            "neobert",
-            "modernbert",
-            "transformer",
-            "caduceus",
-        ):
-            raise ValueError(
-                f"Unsupported backbone type: {self.backbone_type}. Supported "
-                "types: hyenadna, mamba3, neobert, modernbert, transformer, "
-                "caduceus"
-            )
 
         # 3-class classification: acceptor / donor / neither.
         output_dim_cls = 3
@@ -2628,12 +1298,8 @@ class IssaSplice(nn.Module):
         try:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-            is_peft = self._is_peft_model()
 
-            if is_peft:
-                checkpoint = self._create_peft_checkpoint(save_path)
-            else:
-                checkpoint = self._create_standard_checkpoint()
+            checkpoint = self._create_standard_checkpoint()
 
             # Add common metadata
             checkpoint["model_config"] = self.config
@@ -2650,28 +1316,7 @@ class IssaSplice(nn.Module):
             log_only_master_process(self.logger, "error", f"Error saving model: {e}")
             raise
 
-    def _is_peft_model(self) -> bool:
-        """Check if model has PEFT adapters."""
-        return hasattr(self.model, "peft_config") and bool(
-            getattr(self.model, "peft_config")
-        )
 
-    def _create_peft_checkpoint(self, save_path: str) -> dict[str, Any]:
-        """Create checkpoint dict for PEFT model."""
-        # Extract PEFT metadata
-        peft_type, adapter_names = self._get_peft_metadata()
-
-        # Save adapter files
-        adapter_path = self._save_peft_adapter(save_path, peft_type)
-
-        return {
-            "is_peft_model": True,
-            "adapter_path": adapter_path,
-            "adapter_names": adapter_names,
-            "peft_type": peft_type,
-            "base_model_name": self.model_name,
-            "model_state_dict": self.model.state_dict(),
-        }
 
     def _create_standard_checkpoint(self) -> dict[str, Any]:
         """Create checkpoint dict for standard model."""
@@ -2680,45 +1325,10 @@ class IssaSplice(nn.Module):
             "model_state_dict": self.model.state_dict(),
         }
 
-    def _get_peft_metadata(self) -> tuple[str | None, list[str]]:
-        """Extract PEFT type and adapter names from model."""
-        try:
-            peft_config = getattr(self.model, "peft_config", {})
 
-            # Get adapter names
-            adapter_names = (
-                list(peft_config.keys())
-                if isinstance(peft_config, dict)
-                else list(getattr(peft_config, "keys", lambda: [])())
-            )
-
-            # Get PEFT type from first adapter
-            peft_type = None
-            if adapter_names:
-                first_config = peft_config[adapter_names[0]]
-                peft_type = getattr(first_config, "peft_type", None)
-
-            return peft_type, adapter_names
-        except Exception:
-            return None, []
-
-    def _save_peft_adapter(self, save_path: str, peft_type: str | None) -> str:
-        """Save PEFT adapter to disk and return path."""
-        base, _ = os.path.splitext(save_path)
-        suffix = (peft_type or "peft").lower()
-        adapter_path = f"{base}_{suffix}_adapter"
-
-        try:
-            self.model.save_pretrained(adapter_path)
-        except Exception as e:
-            log_only_master_process(
-                self.logger, "warning", f"Failed to save PEFT adapters: {e}"
-            )
-
-        return adapter_path
 
     def load_model_from_checkpoint(self, checkpoint_path: str) -> None:
-        """Load model from checkpoint (PEFT-aware).
+        """Load the complete model state from a paper checkpoint.
 
         Args:
             checkpoint_path (str): Path to the checkpoint file.
@@ -2739,43 +1349,10 @@ class IssaSplice(nn.Module):
         # because _load_training_state already passes False.
         ckpt = torch.load(checkpoint_path, map_location="cpu",
                           weights_only=False)
-        is_peft = bool(ckpt.get("is_peft_model", False))
 
-        if is_peft:
-            self._load_peft_checkpoint(ckpt)
-        else:
-            self._load_standard_checkpoint(ckpt)
+        self._load_standard_checkpoint(ckpt)
         return
 
-    def _load_peft_checkpoint(self, ckpt: dict) -> None:
-        """Load PEFT checkpoint with adapter.
-
-        Args:
-            ckpt (dict): Checkpoint dictionary.
-
-        Raises:
-            ValueError: If invalid adapter path.
-            Exception: If loading fails.
-        """
-        adapter_path = ckpt.get("adapter_path")
-
-        if not adapter_path or not os.path.exists(adapter_path):
-            raise ValueError(f"Invalid adapter path: {adapter_path}")
-
-        if isinstance(self.model, PeftModel):
-            base_model = self.model.get_base_model()
-        else:
-            base_model = self.model
-
-        self.model = PeftModel.from_pretrained(
-            base_model, adapter_path, is_trainable=True
-        )
-
-        log_only_master_process(
-            self.logger, "info", f"PEFT adapter loaded from {adapter_path}"
-        )
-
-        return
 
     def _load_standard_checkpoint(self, ckpt: dict) -> None:
         """Load standard (non-PEFT) checkpoint.
@@ -3064,16 +1641,7 @@ class IssaSplice(nn.Module):
             # The N-gram embedding reads nt symbols A, C, G, T, N = 0..4; special
             # tokens, which one-hot to zeros, read as N.
             symbols = None
-            if self.ngram_embedding_cfg is not None:
-                onehot_idx = self.token_to_onehot_idx[input_ids]
-                symbols = torch.where(onehot_idx >= 0, onehot_idx, N_SYMBOL)
             encoder_symbols = symbols
-            if self.ngram_input is not None:
-                # Chunker-input placement: chunk tokens are gathered from this
-                # embedding, so the k-mer vectors reach every stage and the
-                # trunk; the stage-0 encoder takes no symbols of its own.
-                nt_emb = nt_emb + self.ngram_input(symbols, nt_emb)
-                encoder_symbols = None
             # Step B: Hierarchical chunker -> outer-to-inner encode pass.
             # For single-stage (N=1) this is identical to the legacy
             # path; for N>=2 each stage compresses the previous level's
@@ -3099,19 +1667,6 @@ class IssaSplice(nn.Module):
             # attention. HyenaDNA's long-conv path ignores padding by
             # construction, so no mask is threaded for it. token_mask is
             # True for valid chunks at the deepest stage.
-            if self.backbone_type.lower() == "transformer":
-                backbone_kwargs["attention_mask"] = hierarchical_outputs.stage_outputs[
-                    -1
-                ].token_mask
-                # Offset RoPE: key the backbone's rotary positions on each
-                # chunk's within-window nt offset (composed across stages)
-                # instead of the chunk index, so genomic spacing between
-                # chunks enters attention. chunk_index mode leaves this None
-                # and the backbone falls back to 0..K-1.
-                if self.transformer_rope_position_mode == "offset":
-                    backbone_kwargs["position_ids"] = self._compose_deepest_nt_offsets(
-                        hierarchical_outputs.stage_outputs
-                    )
             outputs = self.model(**backbone_kwargs)
         elif self.backbone_onehot_input:
             # One-hot backbone-input ablation: project the one-hot nt

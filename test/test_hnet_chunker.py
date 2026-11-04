@@ -11,13 +11,15 @@ router gets no task gradient at all.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
 from torch import nn
+from omegaconf import OmegaConf
 
 from model.chunker import (
     Dechunker,
@@ -180,11 +182,18 @@ class TestLegacyUnchanged:
 
 
 def _tiny_hnet_model() -> Any:
-    """Two-stage hnet IssaSplice on the offline minimal ModernBERT config."""
-    path = Path(__file__).with_name("test_hybrid_head_input.py")
-    spec = importlib.util.spec_from_file_location("test_hybrid_head_input", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    """Two-stage H-Net with a small local HyenaDNA trunk and character tokens."""
+    from train.trainer import IssaSpliceTrainer
+    from model.hyenadna.src.configuration_hyena import HyenaConfig
+
+    full_cfg = OmegaConf.load(
+        Path(__file__).resolve().parents[1] / "config/train/splicepath_v50.yaml"
+    )
+    cfg = full_cfg.model
+    cfg.seq_length = cfg.tokenizer_max_length = 128
+    cfg.init_weight_dtype = "float32"
+    cfg.base_backbone_output_dim = cfg.hidden_size = 64
+    cfg.local_feature_output_dim = 256
     stage = {
         "encoder_type": "mamba2",
         "mamba2_num_layers": 2,
@@ -196,22 +205,29 @@ def _tiny_hnet_model() -> Any:
         "dechunker_transformer_num_heads": 4,
         "chunker_style": "hnet",
     }
-    cfg = module._build_cfg(
-        {
-            "tokenizer_type": "dynamic_chunker",
-            "dynamic_chunker": {
-                "target_chunk_rate": 0.5,
-                "enable_encoder_residual": True,
-                "stages": [
-                    dict(stage, target_chunk_rate=0.3333),
-                    dict(stage, target_chunk_rate=0.5),
-                ],
-            },
-        }
-    )
+    cfg.dynamic_chunker = {
+        "target_chunk_rate": 0.5,
+        "enable_encoder_residual": True,
+        "stages": [
+            dict(stage, target_chunk_rate=0.3333),
+            dict(stage, target_chunk_rate=0.5),
+        ],
+    }
     torch.manual_seed(0)
-    model = module.IssaSplice(cfg).cuda()
-    input_ids, attention_mask = module._inputs(model)
+    tokenizer = SimpleNamespace(
+        get_vocab=lambda: {"A": 0, "C": 1, "G": 2, "T": 3, "N": 4, "[PAD]": 5},
+        pad_token_id=5,
+    )
+    tiny_config = HyenaConfig(
+        d_model=64, n_layer=2, d_inner=128, vocab_size=16, max_seq_len=128
+    )
+    with (
+        patch("model.model.AutoConfig.from_pretrained", return_value=tiny_config),
+        patch("model.model.AutoTokenizer.from_pretrained", return_value=tokenizer),
+    ):
+        model = IssaSpliceTrainer(full_cfg).init_model(verbose=False).cuda()
+    input_ids = torch.randint(0, 4, (2, 128))
+    attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
     return model, input_ids.cuda(), attention_mask.cuda()
 
 

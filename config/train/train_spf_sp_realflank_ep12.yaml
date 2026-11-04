@@ -6,6 +6,3 @@ train:
   out_dir: ./data/eval/spf_multichunk/cv5_sp_rf_ep12
 split:
   freeze_npz: ./data/eval/clinvar_pb_2026_split_cc/fold0_split_cc_seed42.npz
-mlflow:
-  run_name: spf_sp_rf_ep12_mc8750
-  enabled: false

@@ -18,7 +18,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import Subset
 
 from model.model import IssaSplice
-from train.dataset import PangolinSSUDataset, SplicingH5Dataset
+from train.dataset import SplicingH5Dataset
 
 
 class IssaSpliceTrainer:
@@ -117,68 +117,31 @@ class IssaSpliceTrainer:
             raise ValueError(
                 "model.aux_heads.enable_phylop=true requires data.phylop_h5_path."
             )
-        # Multi-species Pangolin SSU: a list of per-species H5 files (spliced +
-        # usage labels) trained together via PangolinSSUDataset. Falls back to
-        # the single-file SplicingH5Dataset when data.train_h5_paths is unset.
-        ms_paths = OmegaConf.select(self.cfg, "data.train_h5_paths", default=None)
-        if ms_paths is not None:
-            ms_paths = list(ms_paths)
-            self.logger.info(
-                f"📁 Loading {len(ms_paths)} multi-species SSU H5 files"
+        self.logger.info(f"📁 Loading H5 dataset: {h5_path}")
+        site_usage_soft = bool(
+            OmegaConf.select(
+                self.cfg, "data.site_usage_soft_labels", default=False
             )
-            soft_usage = bool(
-                OmegaConf.select(self.cfg, "data.soft_usage_labels", default=False)
+        )
+        if site_usage_soft and bool(
+            OmegaConf.select(
+                self.cfg,
+                "training.classification.use_hard_labels",
+                default=False,
             )
-            if soft_usage:
-                # The hard-label pass rebuilds `neither` as the complement of a
-                # thresholded acceptor/donor, which rounds every usage weight
-                # back to one-hot. That leaves a run that looks soft in the
-                # config and trains hard, so refuse it rather than log it.
-                if bool(
-                    OmegaConf.select(
-                        self.cfg,
-                        "training.classification.use_hard_labels",
-                        default=False,
-                    )
-                ):
-                    raise ValueError(
-                        "data.soft_usage_labels=true requires "
-                        "training.classification.use_hard_labels=false; "
-                        "the hard-label pass would round the usage weights "
-                        "back to one-hot."
-                    )
-                self.logger.info("🎚️  3-class target is usage-weighted (soft)")
-            dataset = PangolinSSUDataset(
-                h5_paths=ms_paths,
-                context_length=cl,
-                soft_usage_labels=soft_usage,
+        ):
+            raise ValueError(
+                "data.site_usage_soft_labels=true requires "
+                "training.classification.use_hard_labels=false; "
+                "the hard-label pass would discard the usage values."
             )
-        else:
-            self.logger.info(f"📁 Loading H5 dataset: {h5_path}")
-            site_usage_soft = bool(
-                OmegaConf.select(
-                    self.cfg, "data.site_usage_soft_labels", default=False
-                )
-            )
-            if site_usage_soft and bool(
-                OmegaConf.select(
-                    self.cfg,
-                    "training.classification.use_hard_labels",
-                    default=False,
-                )
-            ):
-                raise ValueError(
-                    "data.site_usage_soft_labels=true requires "
-                    "training.classification.use_hard_labels=false; "
-                    "the hard-label pass would discard the usage values."
-                )
-            dataset = SplicingH5Dataset(
-                h5_path=h5_path,
-                context_length=cl,
-                feature_h5_path=feature_h5_path,
-                site_usage_soft_labels=site_usage_soft,
-                phylop_h5_path=phylop_h5_path,
-            )
+        dataset = SplicingH5Dataset(
+            h5_path=h5_path,
+            context_length=cl,
+            feature_h5_path=feature_h5_path,
+            site_usage_soft_labels=site_usage_soft,
+            phylop_h5_path=phylop_h5_path,
+        )
 
         trl = dataset.target_len
         effective_cl = cl if cl is not None else dataset.cl_max

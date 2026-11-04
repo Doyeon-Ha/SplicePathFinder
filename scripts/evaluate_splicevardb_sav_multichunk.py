@@ -68,7 +68,6 @@ from evaluate.evaluate_splicevardb_sav import (  # noqa: E402
     _load_hyenadna_model,
     _resolve_probability_mode,
 )
-from model.hybrid_splice import HybridSpliceModel, ModelConfig  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from canonical_site_track import (  # noqa: E402
@@ -125,7 +124,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", required=True, type=str)
     p.add_argument(
         "--model-type",
-        choices=("hyenadna", "hybrid_splice", "dlm_qwen"),
+        choices=("hyenadna",),
         default="hyenadna",
         help=(
             "Checkpoint flavour. 'hyenadna' (default) is the project's "
@@ -723,199 +722,14 @@ def _aggregate_variant_features(
     }
 
 
-def _load_hybrid_splice_model(
-    checkpoint_path: str, device: torch.device
-) -> tuple[torch.nn.Module, int]:
-    """Load a ``HybridSpliceModel`` checkpoint for full-length scoring.
-
-    ``output_length`` is forced to ``None`` so the forward returns all
-    ``input_length`` positions. The canonical ``liberal`` mode reads the flank,
-    exactly as it does for the HyenaDNA models, so cropping to the supervised
-    target here would silently change the readout.
-
-    Args:
-        checkpoint_path (str): Path to a checkpoint written by
-            ``train/train_hybrid_splice.py``.
-        device (torch.device): Compute device.
-
-    Returns:
-        tuple[torch.nn.Module, int]: The model in eval mode on ``device``, and
-        the supervised target length it was TRAINED with (needed for the
-        conservative-mode window clamp, and not recoverable afterwards because
-        ``output_length`` is overridden here).
-    """
-    from dataclasses import fields
-
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    settings = dict(payload["model_config"])
-    known = {f.name for f in fields(ModelConfig)}
-    unknown = sorted(set(settings) - known)
-    if unknown:
-        logger.warning("checkpoint carries unknown ModelConfig keys: %s", unknown)
-    settings = {k: v for k, v in settings.items() if k in known}
-    # asdict() turned the tuple fields into lists on the way in.
-    for key in ("dilations", "class_order"):
-        if settings.get(key) is not None:
-            settings[key] = tuple(settings[key])
-    trained_target_length = int(
-        settings.get("output_length") or settings["input_length"]
-    )
-    settings["output_length"] = None
-
-    model = HybridSpliceModel(ModelConfig(**settings))
-    model.load_state_dict(payload["model_state_dict"])
-    model.eval().to(device)
-    logger.info(
-        "Loaded hybrid_splice checkpoint (epoch=%s, %d parameters): %s",
-        payload.get("epoch"), model.num_parameters(), model.summary(),
-    )
-    if tuple(model.config.class_order) != ("acceptor", "donor", "neither"):
-        raise ValueError(
-            "scorer assumes (acceptor, donor, neither) channel order, got "
-            f"{model.config.class_order}"
-        )
-    return model, trained_target_length
 
 
-@torch.inference_mode()
-def _hybrid_splice_forward_probs(
-    model: torch.nn.Module, tokens_int8: np.ndarray, device: torch.device
-) -> np.ndarray:
-    """Score one batch of int8 token rows.
-
-    Args:
-        model (torch.nn.Module): Loaded ``HybridSpliceModel``.
-        tokens_int8 (np.ndarray): ``(B, L)`` tokens, 0=N, 1=A, 2=C, 3=G, 4=T --
-            the same encoding this module already uses (``_NT_TO_INT``) and the
-            same one the training H5 stores.
-        device (torch.device): Compute device.
-
-    Returns:
-        np.ndarray: ``(B, L, 3)`` probabilities in (acceptor, donor, neither)
-        order.
-    """
-    tokens = torch.from_numpy(np.ascontiguousarray(tokens_int8)).to(device)
-    channels = model.config.in_channels
-    one_hot = torch.zeros(
-        tokens.shape[0], channels, tokens.shape[1],
-        device=device, dtype=torch.float32,
-    )
-    index = tokens.long().clamp_(0, channels - 1).unsqueeze(1)
-    one_hot.scatter_(1, index, 1.0)
-    output = model(one_hot)
-    logits = output[0] if isinstance(output, tuple) else output
-    probs = torch.softmax(logits.float(), dim=1)
-    return probs.permute(0, 2, 1).cpu().numpy()
 
 
-def _load_dlm_qwen_model(
-    checkpoint_path: str, device: torch.device
-) -> tuple[torch.nn.Module, int]:
-    """Load a ``DlmQwenSplice`` checkpoint for full-length scoring.
-
-    The checkpoint holds only the trained tensors -- the frozen DLM backbone is
-    reloaded from its HuggingFace cache -- so the module is constructed first
-    from the ``args`` the trainer stored, then filled in with
-    ``strict=False``. Gradient checkpointing is off: it trades compute for
-    activation memory, which is the wrong trade under ``inference_mode``.
-
-    Args:
-        checkpoint_path (str): Path to a checkpoint written by
-            ``train/train_dlm_qwen.py``.
-        device (torch.device): Compute device.
-
-    Returns:
-        tuple[torch.nn.Module, int]: The model in eval mode on ``device``, and
-        the supervised target length it was trained with (the conservative-mode
-        window clamp needs it, and the full-length readout hides it).
-    """
-    from model.dlm_qwen_splice import DlmQwenSplice
-
-    state = torch.load(
-        checkpoint_path, map_location="cpu", mmap=True, weights_only=False
-    )
-    train_args = dict(state["args"])
-    evo2_path = train_args.get("evo2_path")
-    model = DlmQwenSplice(
-        dlm=train_args["dlm"],
-        dlm_paths={"evo2": evo2_path} if evo2_path else None,
-        qwen_path=train_args["qwen_path"],
-        strands=train_args["strands"],
-        gradient_checkpointing=False,
-        qwen_dtype=torch.bfloat16,
-    )
-    missing, unexpected = model.load_state_dict(state["model"], strict=False)
-    # The frozen DLM and (in later runs) the unused token embedding are absent
-    # from the checkpoint by design; anything else missing means the trained
-    # weights did not land, which would score noise without ever erroring.
-    unfilled = [
-        k for k in missing
-        if not k.startswith("dlms.") and k != "qwen.embed_tokens.weight"
-    ]
-    if unfilled:
-        raise ValueError(
-            f"{len(unfilled)} trained tensors missing from {checkpoint_path}, "
-            f"e.g. {unfilled[:5]}"
-        )
-    if unexpected:
-        raise ValueError(
-            f"{len(unexpected)} unexpected tensors in {checkpoint_path}, "
-            f"e.g. {unexpected[:5]}"
-        )
-    model.eval().requires_grad_(False).to(device)
-    logger.info(
-        "Loaded dlm_qwen checkpoint (epoch=%s, step=%s, dlm=%s, strands=%s, "
-        "qwen=%s, feature_dim=%d); %d frozen-backbone tensors reloaded from "
-        "the HuggingFace cache.",
-        state.get("epoch"), state.get("step"), train_args["dlm"],
-        train_args["strands"], train_args["qwen_path"], model.feature_dim,
-        len(missing),
-    )
-    return model, int(model.target_len)
 
 
-@torch.inference_mode()
-def _dlm_qwen_forward_probs(
-    model: torch.nn.Module, tokens_int8: np.ndarray, device: torch.device
-) -> np.ndarray:
-    """Score one batch of int8 token rows with a ``DlmQwenSplice``.
-
-    The model consumes nucleotide codes directly, so there is no one-hot and no
-    tokenizer between this module's encoding and the backbone. bfloat16
-    autocast matches how the stack was trained.
-
-    Args:
-        model (torch.nn.Module): Loaded ``DlmQwenSplice``.
-        tokens_int8 (np.ndarray): ``(B, L)`` tokens, 0=N, 1=A, 2=C, 3=G, 4=T.
-        device (torch.device): Compute device.
-
-    Returns:
-        np.ndarray: ``(B, L, 3)`` probabilities in (acceptor, donor, neither)
-        order -- all ``L`` positions, so both aggregation modes are available.
-    """
-    codes = torch.from_numpy(np.ascontiguousarray(tokens_int8)).to(device)
-    with torch.autocast(
-        device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
-    ):
-        logits = model(codes.long(), full_length=True)
-    return torch.softmax(logits.float(), dim=-1).cpu().numpy()
 
 
-def _is_dlm_qwen(model: torch.nn.Module) -> bool:
-    """Whether ``model`` is a ``DlmQwenSplice``.
-
-    The class is imported lazily by ``_load_dlm_qwen_model`` -- it drags in the
-    DNA-language-model backbones, which the other flavours do not need -- so
-    check the already-imported module rather than importing it to ask.
-
-    Args:
-        model (torch.nn.Module): Loaded model.
-
-    Returns:
-        bool: True for a ``DlmQwenSplice``.
-    """
-    module = sys.modules.get("model.dlm_qwen_splice")
-    return module is not None and isinstance(model, module.DlmQwenSplice)
 
 
 def _batched_forward(
@@ -945,31 +759,6 @@ def _batched_forward(
     """
     n = len(seqs_int8)
     out = np.zeros((n, total_length, 3), dtype=np.float32)
-    if _is_dlm_qwen(model):
-        # Nucleotide codes go straight in: no one-hot, no tokenizer.
-        for i in tqdm(
-            range(0, n, batch_size), desc="Inference", leave=False,
-        ):
-            chunk = np.stack(seqs_int8[i : i + batch_size])
-            out[i : i + len(chunk)] = _dlm_qwen_forward_probs(
-                model, chunk, device
-            )
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-        return out
-    if isinstance(model, HybridSpliceModel):
-        # No tokenizer: the model consumes a one-hot of the very same int8
-        # encoding, so the verification dance below does not apply.
-        for i in tqdm(
-            range(0, n, batch_size), desc="Inference", leave=False,
-        ):
-            chunk = np.stack(seqs_int8[i : i + batch_size])
-            out[i : i + len(chunk)] = _hybrid_splice_forward_probs(
-                model, chunk, device
-            )
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-        return out
     # HyenaDNA's tokenizer is a pure-Python CharacterTokenizer: decoding int8
     # to a 15,000-char string and re-splitting it costs ~480k interpreter-level
     # operations per batch to compute what is a fixed 5-entry remap. Build the
@@ -1058,47 +847,16 @@ def _evaluate(
 
     logger.info("Loading model from %s", args.checkpoint)
     trained_target_len: int | None = None
-    if args.hyena_filter_max_seq_len is not None and args.model_type != "hyenadna":
-        raise ValueError(
-            "--hyena-filter-max-seq-len is only valid with --model-type hyenadna"
-        )
-    if args.model_type == "dlm_qwen":
-        model, trained_target_len = _load_dlm_qwen_model(args.checkpoint, device)
-        cfg = None
-        prob_mode = "softmax"
-        loss_type = "dlm_qwen_focal"
-        from model.dlm_qwen_splice import CONTEXT_LEN as _dlm_context_len
-
-        if int(args.total_length) != int(_dlm_context_len):
-            raise ValueError(
-                f"--total-length {args.total_length} does not match the "
-                f"dlm_qwen training context {_dlm_context_len}; the chunk grid "
-                "and the model would disagree about coordinates"
-            )
-    elif args.model_type == "hybrid_splice":
-        model, trained_target_len = _load_hybrid_splice_model(
-            args.checkpoint, device,
-        )
-        cfg = None
-        prob_mode = "softmax"
-        loss_type = "hybrid_splice_multitask"
-        if int(args.total_length) != int(model.config.input_length):
-            raise ValueError(
-                f"--total-length {args.total_length} does not match the "
-                f"model's input_length {model.config.input_length}; the "
-                "chunk grid and the model would disagree about coordinates"
-            )
-    else:
-        model, cfg = _load_hyenadna_model(
-            checkpoint_path=args.checkpoint,
-            train_config_path=args.train_config,
-            device=device,
-            hyena_filter_max_seq_len=args.hyena_filter_max_seq_len,
-        )
-        prob_mode = _resolve_probability_mode(cfg, args.probability_mode)
-        loss_type = OmegaConf.select(
-            cfg, "training.loss_function.type", default=None,
-        )
+    model, cfg = _load_hyenadna_model(
+        checkpoint_path=args.checkpoint,
+        train_config_path=args.train_config,
+        device=device,
+        hyena_filter_max_seq_len=args.hyena_filter_max_seq_len,
+    )
+    prob_mode = _resolve_probability_mode(cfg, args.probability_mode)
+    loss_type = OmegaConf.select(
+        cfg, "training.loss_function.type", default=None,
+    )
     logger.info("loss_type=%s probability_mode=%s", loss_type, prob_mode)
 
     # Canonical sites are needed both to stand in for the reference readout

@@ -276,31 +276,6 @@ def _batched_forward(
     # The CPU-servable model has no tokenizer: it consumes a one-hot of the
     # same int8 encoding directly. Imported lazily so this module keeps no
     # import-time dependency on the multichunk scorer.
-    from scripts.evaluate_splicevardb_sav_multichunk import (
-        HybridSpliceModel,
-        _dlm_qwen_forward_probs,
-        _hybrid_splice_forward_probs,
-        _is_dlm_qwen,
-    )
-    if _is_dlm_qwen(model):
-        # Nucleotide codes go straight in: no one-hot, no tokenizer.
-        for i in tqdm(range(0, n, batch_size), desc="Inference", leave=False):
-            chunk = np.stack(seqs_int8[i:i + batch_size])
-            out[i:i + len(chunk)] = _dlm_qwen_forward_probs(
-                model, chunk, device,
-            )
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-        return out
-    if isinstance(model, HybridSpliceModel):
-        for i in tqdm(range(0, n, batch_size), desc="Inference", leave=False):
-            chunk = np.stack(seqs_int8[i:i + batch_size])
-            out[i:i + len(chunk)] = _hybrid_splice_forward_probs(
-                model, chunk, device,
-            )
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-        return out
     for i in tqdm(range(0, n, batch_size), desc="Inference", leave=False):
         chunk = seqs_int8[i:i + batch_size]
         seqs_str = [_decode_seq(s) for s in chunk]

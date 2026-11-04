@@ -42,8 +42,8 @@ import sys
 import tarfile
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
-import mlflow
 import torch
 import torch.distributed as dist
 from hydra.utils import to_absolute_path
@@ -874,22 +874,6 @@ def evaluate(
         )
         print(f"Final test metrics:\n  {formatted}")
 
-        mlflow_cfg = OmegaConf.select(cfg, "mlflow", default=None)
-        if mlflow_cfg is not None and mlflow_cfg.enabled:
-            tracking_uri = os.environ["MLFLOW_URI"]
-            mlflow.set_tracking_uri(tracking_uri)
-            mlflow.set_experiment(
-                experiment_id=str(mlflow_cfg.experiment_id),
-            )
-            run_name = OmegaConf.select(
-                cfg,
-                "mlflow.run_name",
-                default="evaluate",
-            )
-            with mlflow.start_run(run_name=run_name):
-                prefixed = {f"test/{k}": v for k, v in test_metrics.items()}
-                mlflow.log_metrics(prefixed, step=0)
-                logger.info("Metrics logged to MLflow")
 
     if world_size > 1:
         dist.barrier()

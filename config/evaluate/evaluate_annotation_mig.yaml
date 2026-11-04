@@ -7,6 +7,3 @@ evaluation:
   num_workers: 6
   use_histogram: false
   ignore_embed_metadata: false
-mlflow:
-  enabled: false
-  run_name: null

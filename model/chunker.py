@@ -22,9 +22,7 @@ Two boundary-feature encoders are supported (selected via
 - ``mamba2`` (H-Net Hwang et al. 2025): stacked Mamba-2 SSM blocks
   giving O(L) long-range context. Requires the optional
   ``mamba_ssm`` + ``causal-conv1d`` packages (lazy-imported).
-- ``mamba3``: the same stack built from Mamba-3 blocks. Mamba-3 has no
-  depthwise conv, so ``mamba2_d_conv`` does not apply; every other
-  ``mamba2_*`` knob is shared. Requires ``mamba_ssm >= 2.3``.
+
 
 Position 0 is always forced as a boundary so that the chunk count K is at
 least 1 for every sample (DD-014). The boundary-predictor logit at
@@ -54,8 +52,7 @@ nucleotide-level ``[B, L, D]``. Four modes are supported:
   Within-chunk positions naturally differentiate via SSM state
   propagation. Requires the optional ``mamba_ssm`` + ``causal-conv1d``
   packages.
-- ``mamba3``: the same refinement built from Mamba-3 blocks. Requires
-  ``mamba_ssm >= 2.3``.
+
 
 The ``attention`` keyword (full O(B*H*L*K) cross-attention) is rejected
 at init with a redirect to ``windowed_attention``; full attention is
@@ -401,16 +398,8 @@ def _build_ssm_layers(
 ) -> nn.ModuleList:
     """Build the SSM stack shared by the boundary encoder and the dechunker.
 
-    ``mamba2`` and ``mamba3`` are interchangeable at this call site: both
-    take ``(B, L, D)`` and return the same shape, and both accept
-    ``d_model / d_state / expand / headdim``. Mamba-3 dropped the
-    depthwise causal conv (its ``B`` / ``C`` carry RoPE instead), so
-    ``d_conv`` is forwarded to ``mamba2`` only — ``Mamba3.__init__``
-    absorbs unknown kwargs into ``**kwargs`` and would swallow it
-    silently.
-
     Args:
-        ssm_variant (str): ``"mamba2"`` or ``"mamba3"``.
+        ssm_variant (str): ``"mamba2"``.
         num_layers (int): Number of blocks in the stack.
         hidden_dim (int): Model dim D of each block.
         d_state (int): SSM state dim.
@@ -446,24 +435,11 @@ def _build_ssm_layers(
         return nn.ModuleList(
             [Mamba2(d_conv=int(d_conv), **kwargs) for _ in range(int(num_layers))]
         )
-    try:
-        from mamba_ssm.modules.mamba3 import Mamba3  # type: ignore
-    except ImportError as exc:
-        raise ImportError(
-            "ssm_variant='mamba3' requires mamba_ssm >= 2.3 "
-            "(2.2.6 ships no mamba3.py). Install with:\n"
-            "    uv sync --inexact\n"
-            "See CLAUDE.md 'mamba_ssm 정본 버전' for the per-node state."
-        ) from exc
-    return nn.ModuleList([Mamba3(**kwargs) for _ in range(int(num_layers))])
+    raise ValueError(f"Unsupported SSM variant: {ssm_variant}")
 
 
 class _Mamba2BoundaryEncoder(nn.Module):
     """SSM based boundary feature encoder for ``DynamicChunker``.
-
-    ``ssm_variant`` selects the block: Mamba-2 (default) or Mamba-3.
-    The class name and the ``layers`` attribute predate the Mamba-3
-    option and are kept so existing checkpoints still load by key.
 
     Stacks ``num_layers`` SSM blocks (with residual
     connections) on the input nt embedding, then projects to the
@@ -511,7 +487,7 @@ class _Mamba2BoundaryEncoder(nn.Module):
                 feature projection (consumed by the shared logit head).
             num_layers (int): Number of stacked Mamba-2 blocks.
                 Defaults to 2 (matches H-Net chunker depth).
-            ssm_variant (str): ``"mamba2"`` (default) or ``"mamba3"``.
+            ssm_variant (str): ``"mamba2"``.
                 Mamba-3 has no depthwise conv, so ``d_conv`` is ignored
                 for that variant.
             d_state (int): SSM state dim. Lower is cheaper. Defaults
@@ -632,30 +608,7 @@ class _Mamba2BoundaryEncoder(nn.Module):
                     for _ in range(int(transformer_num_layers))
                 ]
             )
-        # Optional gated k-mer embedding (model/ngram_embedding.py), attached
-        # by :meth:`set_ngram_embedding` on the nt-level stage only.
-        self.ngram: nn.Module | None = None
 
-    def set_ngram_embedding(self, ngram: nn.Module) -> None:
-        """Add ``ngram``'s output to the residual stream before the second block.
-
-        After one SSM block the gate's query carries context; on the input
-        embedding it would see only the centre nucleotide (Engram, likewise,
-        enters at layer 2).
-
-        Args:
-            ngram (nn.Module): Maps ``(symbols (B, L), hidden (B, L, D))`` to
-                ``(B, L, D)``.
-
-        Raises:
-            ValueError: If the stack has fewer than two SSM blocks.
-        """
-        if len(self.layers) < 2:
-            raise ValueError(
-                "the N-gram embedding enters before the second SSM block; "
-                f"this encoder has {len(self.layers)}."
-            )
-        self.ngram = ngram
 
     def forward(
         self,
@@ -668,8 +621,7 @@ class _Mamba2BoundaryEncoder(nn.Module):
         Args:
             nt_emb (torch.Tensor): ``(B, L, D)``.
             symbols (torch.Tensor | None): ``(B, L)`` int64 nt symbols
-                (A, C, G, T, N = 0..4). Required when an N-gram embedding is
-                set, unused otherwise.
+                (A, C, G, T, N = 0..4); reserved for input compatibility.
             pad_mask (torch.Tensor | None): ``(B, L)`` bool, True on
                 padding; passed to the Transformer layers as
                 ``src_key_padding_mask``. The SSM blocks are causal, so
@@ -683,11 +635,7 @@ class _Mamba2BoundaryEncoder(nn.Module):
                   state for the decoder-side residual stream when
                   ``enable_residual_projection=True``; otherwise None.
 
-        Raises:
-            ValueError: If an N-gram embedding is set and ``symbols`` is None.
         """
-        if self.ngram is not None and symbols is None:
-            raise ValueError("this encoder has an N-gram embedding; pass symbols.")
         x = nt_emb
         # Pre-norm template: x = x + Layer(RMSNorm(x)). Residual is on
         # the unnormalized stream, so signal magnitude does not collapse
@@ -696,8 +644,6 @@ class _Mamba2BoundaryEncoder(nn.Module):
         for idx, (layer, norm) in enumerate(
             zip(self.layers, self.layer_norms, strict=True)
         ):
-            if idx == 1 and self.ngram is not None:
-                x = x + self.ngram(symbols, x)
             x = x + layer(norm(x))
         # dnaHNet hybrid: Transformer layers follow the Mamba stack
         # (M-then-T order from the paper's ``M{N}T{M}`` layout). Each
@@ -752,7 +698,7 @@ class DynamicChunker(nn.Module):
             single boundary logit per position.
     """
 
-    _SUPPORTED_ENCODER_TYPES: tuple[str, ...] = ("conv1d", "mamba2", "mamba3")
+    _SUPPORTED_ENCODER_TYPES: tuple[str, ...] = ("conv1d", "mamba2")
 
     def __init__(
         self,
@@ -846,7 +792,7 @@ class DynamicChunker(nn.Module):
                 matching ``Dechunker`` adds the EMA and the confidence
                 product. ``gumbel_temperature``, ``inference_threshold``,
                 ``boundary_decision`` and ``boundary_predictor_hidden_dim``
-                are unused. Requires a ``mamba2`` / ``mamba3`` encoder with
+                are unused. Requires a ``mamba2`` encoder with
                 ``enable_encoder_residual=True``.
 
         Raises:
@@ -900,7 +846,7 @@ class DynamicChunker(nn.Module):
         if hnet and encoder_type == "conv1d":
             raise ValueError(
                 "chunker_style='hnet' routes on the encoder hidden state; use "
-                "encoder_type 'mamba2' or 'mamba3'."
+                "encoder_type 'mamba2'."
             )
         if hnet and not enable_encoder_residual:
             raise ValueError(
@@ -914,7 +860,7 @@ class DynamicChunker(nn.Module):
                 boundary_predictor_kernel_size=(boundary_predictor_kernel_size),
                 boundary_predictor_hidden_dim=(boundary_predictor_hidden_dim),
             )
-        else:  # mamba2 | mamba3
+        else:  # mamba2
             self.encoder = _Mamba2BoundaryEncoder(
                 hidden_dim=hidden_dim,
                 boundary_predictor_hidden_dim=(boundary_predictor_hidden_dim),
@@ -1356,7 +1302,6 @@ class Dechunker(nn.Module):
         "position_offset",
         "windowed_attention",
         "mamba2",
-        "mamba3",
     )
 
     def __init__(
@@ -1428,7 +1373,7 @@ class Dechunker(nn.Module):
                 confidence through a straight-through estimator, plus the
                 encoder residual; the SSM / Transformer stack then plays
                 H-Net's decoder, with padding masked in the Transformer
-                layers. Requires ``mamba2`` or ``mamba3``.
+                layers. Requires ``mamba2``.
 
         Raises:
             ValueError: If ``dechunker_type`` is unknown, or if a mode
@@ -1460,10 +1405,10 @@ class Dechunker(nn.Module):
                 f"{_CHUNKER_STYLES}."
             )
         if chunker_style == "hnet":
-            if dechunker_type not in ("mamba2", "mamba3"):
+            if dechunker_type not in ("mamba2",):
                 raise ValueError(
                     "chunker_style='hnet' needs dechunker_type 'mamba2' or "
-                    f"'mamba3' (H-Net's decoder stack); got {dechunker_type!r}."
+                    f"(H-Net's decoder stack); got {dechunker_type!r}."
                 )
             if hidden_dim is None or int(hidden_dim) % _HNET_EMA_HEADDIM != 0:
                 raise ValueError(
@@ -1536,7 +1481,7 @@ class Dechunker(nn.Module):
             self.v_proj = nn.Linear(int(hidden_dim), int(hidden_dim))
             self.o_proj = nn.Linear(int(hidden_dim), int(hidden_dim))
 
-        if dechunker_type in ("mamba2", "mamba3"):
+        if dechunker_type in ("mamba2",):
             if hidden_dim is None:
                 raise ValueError(
                     f"hidden_dim is required when dechunker_type='{dechunker_type}'."
@@ -1677,7 +1622,7 @@ class Dechunker(nn.Module):
             return self._position_offset(
                 chunk_hidden, chunk_idx, sorted_boundaries, output_length
             )
-        if self.dechunker_type in ("mamba2", "mamba3"):
+        if self.dechunker_type in ("mamba2",):
             return self._mamba2(
                 chunk_hidden, chunk_idx, encoder_residual=encoder_residual
             )

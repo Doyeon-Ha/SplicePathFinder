@@ -67,14 +67,7 @@ from scripts.evaluate_splicevardb_sav_indel_v3 import (  # noqa: E402
     _batched_forward,
     _build_indel_chunk,
 )
-from scripts.evaluate_splicevardb_sav_multichunk import (  # noqa: E402
-    _NO_PEAK,
-    _OFFSET_KEYS,
-    _compute_per_bp_deltas,
-    _load_dlm_qwen_model,
-    _load_hybrid_splice_model,
-    _load_variant_table,
-)
+from scripts.evaluate_splicevardb_sav_multichunk import _NO_PEAK, _OFFSET_KEYS, _compute_per_bp_deltas, _load_variant_table
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", required=True)
     p.add_argument(
         "--model-type",
-        choices=("hyenadna", "hybrid_splice", "dlm_qwen"),
+        choices=("hyenadna",),
         default="hyenadna",
         help=(
             "Checkpoint flavour; see the same flag on "
@@ -546,26 +539,13 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         )
 
     logger.info("Loading model from %s", args.checkpoint)
-    if args.model_type == "dlm_qwen":
-        from model.dlm_qwen_splice import CONTEXT_LEN as _dlm_context_len
-
-        model, _ = _load_dlm_qwen_model(args.checkpoint, device)
-        cfg = None
-        prob_mode = "softmax"
-        seq_length = int(_dlm_context_len)
-    elif args.model_type == "hybrid_splice":
-        model, _ = _load_hybrid_splice_model(args.checkpoint, device)
-        cfg = None
-        prob_mode = "softmax"
-        seq_length = int(model.config.input_length)
-    else:
-        model, cfg = _load_hyenadna_model(
-            checkpoint_path=args.checkpoint,
-            train_config_path=args.train_config,
-            device=device,
-        )
-        prob_mode = _resolve_probability_mode(cfg, args.probability_mode)
-        seq_length = int(OmegaConf.select(cfg, "model.seq_length", default=15000))
+    model, cfg = _load_hyenadna_model(
+        checkpoint_path=args.checkpoint,
+        train_config_path=args.train_config,
+        device=device,
+    )
+    prob_mode = _resolve_probability_mode(cfg, args.probability_mode)
+    seq_length = int(OmegaConf.select(cfg, "model.seq_length", default=15000))
     total_length = seq_length
     fasta = Fasta(args.genome_fasta, sequence_always_upper=True, as_raw=True)
 

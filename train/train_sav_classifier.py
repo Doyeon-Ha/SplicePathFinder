@@ -2,7 +2,7 @@
 
 per-nt feature 캐시를 gene-grouped로 분할하고, 변이 중심 윈도 → RBF →
 단방향 Mamba2 → mean pool → MLP를 BCEWithLogits로 학습한다. val AUROC로
-조기 종료·체크포인트 선택하며, `mlflow.enabled`가 참이면 MLflow로도 추적한다
+조기 종료와 체크포인트 선택을 수행한다
 (기본값 참). frozen base model은 이 루프에 포함되지 않는다(캐시가 경계).
 """
 
@@ -14,7 +14,6 @@ from pathlib import Path
 
 import h5py
 import hydra
-import mlflow
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -138,31 +137,6 @@ def _evaluate(
     )
 
 
-class _NoTracker:
-    """Stand-in for MLflow when ``mlflow.enabled`` is false.
-
-    A Slurm job carries the submitting node's environment, so a run started on
-    a node that cannot reach the tracking server fails before the first epoch.
-    Turning tracking off keeps the checkpoints and the log lines, which are
-    what the fold selection and the registry actually read.
-    """
-
-    def set_experiment(self, *_args, **_kwargs) -> None:
-        """Ignore the experiment name."""
-
-    def log_params(self, *_args, **_kwargs) -> None:
-        """Ignore the parameters."""
-
-    def log_metrics(self, *_args, **_kwargs) -> None:
-        """Ignore the metrics."""
-
-    def log_artifact(self, *_args, **_kwargs) -> None:
-        """Ignore the artifact."""
-
-    @contextlib.contextmanager
-    def start_run(self, *_args, **_kwargs):
-        """Run the body without opening a tracking run."""
-        yield
 
 
 def _save_checkpoint(
@@ -357,77 +331,59 @@ def main(cfg: DictConfig) -> None:
     best_epoch = -1
     patience = int(cfg.train.patience)
 
-    tracker = mlflow if bool(cfg.mlflow.get("enabled", True)) else _NoTracker()
-    if isinstance(tracker, _NoTracker):
-        logger.info("MLflow 추적 꺼짐 — 체크포인트와 로그만 남긴다")
-    else:
-        tracker.set_experiment(str(cfg.mlflow.experiment))
-    with tracker.start_run(run_name=cfg.mlflow.run_name):
-        tracker.log_params(OmegaConf.to_container(cfg, resolve=True, enum_to_str=True))
-        for epoch in range(int(cfg.train.max_epochs)):
-            model.train()
-            running = 0.0
-            for batch in train_loader:
-                channels = batch["channels"].to(device, non_blocking=True)
-                marker = (
-                    batch["marker"].to(device, non_blocking=True)
-                    if use_marker
-                    else None
-                )
-                scalars = (
-                    batch["scalars"].to(device, non_blocking=True)
-                    if "scalars" in batch
-                    else None
-                )
-                target = batch["label"].to(device, non_blocking=True)
-                optimizer.zero_grad()
-                logits = model(channels, marker, scalars)
-                loss = criterion(logits, target)
-                loss.backward()
-                optimizer.step()
-                running += float(loss.item())
-            train_loss = running / max(1, len(train_loader))
-            if val_loader is None:
-                logger.info("epoch %d train_loss=%.4f (검증 없음)", epoch, train_loss)
-                tracker.log_metrics({"train_loss": train_loss}, step=epoch)
-                continue
-            val_auroc, val_auprc = _evaluate(model, val_loader, device, use_marker)
-            logger.info(
-                "epoch %d train_loss=%.4f val_auroc=%.4f val_auprc=%.4f",
-                epoch,
-                train_loss,
-                val_auroc,
-                val_auprc,
+    for epoch in range(int(cfg.train.max_epochs)):
+        model.train()
+        running = 0.0
+        for batch in train_loader:
+            channels = batch["channels"].to(device, non_blocking=True)
+            marker = (
+                batch["marker"].to(device, non_blocking=True)
+                if use_marker
+                else None
             )
-            tracker.log_metrics(
-                {
-                    "train_loss": train_loss,
-                    "val_auroc": val_auroc,
-                    "val_auprc": val_auprc,
-                },
-                step=epoch,
+            scalars = (
+                batch["scalars"].to(device, non_blocking=True)
+                if "scalars" in batch
+                else None
             )
-            if val_auroc > best_auroc:
-                best_auroc = val_auroc
-                best_epoch = epoch
-                ckpt_path = out_dir / "best.pt"
-                _save_checkpoint(
-                    ckpt_path, model, model_kwargs, cfg, epoch, val_auroc
-                )
-                tracker.log_artifact(str(ckpt_path))
-            if epoch - best_epoch >= patience:
-                logger.info("early stop (epoch %d, best %d)", epoch, best_epoch)
-                break
+            target = batch["label"].to(device, non_blocking=True)
+            optimizer.zero_grad()
+            logits = model(channels, marker, scalars)
+            loss = criterion(logits, target)
+            loss.backward()
+            optimizer.step()
+            running += float(loss.item())
+        train_loss = running / max(1, len(train_loader))
         if val_loader is None:
-            last_epoch = int(cfg.train.max_epochs) - 1
-            ckpt_path = out_dir / "final.pt"
-            _save_checkpoint(ckpt_path, model, model_kwargs, cfg, last_epoch, None)
-            tracker.log_artifact(str(ckpt_path))
-            logger.info(
-                "검증 없는 arm — 마지막 epoch %d 저장: %s", last_epoch, ckpt_path
+            logger.info("epoch %d train_loss=%.4f (검증 없음)", epoch, train_loss)
+            continue
+        val_auroc, val_auprc = _evaluate(model, val_loader, device, use_marker)
+        logger.info(
+            "epoch %d train_loss=%.4f val_auroc=%.4f val_auprc=%.4f",
+            epoch,
+            train_loss,
+            val_auroc,
+            val_auprc,
+        )
+        if val_auroc > best_auroc:
+            best_auroc = val_auroc
+            best_epoch = epoch
+            ckpt_path = out_dir / "best.pt"
+            _save_checkpoint(
+                ckpt_path, model, model_kwargs, cfg, epoch, val_auroc
             )
-        else:
-            logger.info("best val_auroc=%.4f @epoch %d", best_auroc, best_epoch)
+        if epoch - best_epoch >= patience:
+            logger.info("early stop (epoch %d, best %d)", epoch, best_epoch)
+            break
+    if val_loader is None:
+        last_epoch = int(cfg.train.max_epochs) - 1
+        ckpt_path = out_dir / "final.pt"
+        _save_checkpoint(ckpt_path, model, model_kwargs, cfg, last_epoch, None)
+        logger.info(
+            "검증 없는 arm — 마지막 epoch %d 저장: %s", last_epoch, ckpt_path
+        )
+    else:
+        logger.info("best val_auroc=%.4f @epoch %d", best_auroc, best_epoch)
 
 
 if __name__ == "__main__":

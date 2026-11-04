@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", required=True)
     p.add_argument(
         "--model-type",
-        choices=("hyenadna", "dlm_qwen"),
+        choices=("hyenadna",),
         default="hyenadna",
         help="Checkpoint flavour; see the same flag on "
              "scripts/evaluate_splicevardb_sav_multichunk.py. The chunk grid, "
@@ -421,14 +421,7 @@ def main() -> None:
     from evaluate.evaluate_splicevardb_sav import _load_hyenadna_model
     from scripts.evaluate_splicevardb_sav_indel import _build_indel_chunk
     from scripts.evaluate_splicevardb_sav_indel_v4 import _align_indel_probs
-    from scripts.evaluate_splicevardb_sav_multichunk import (
-        _aligned_chunk_positions,
-        _batched_forward,
-        _generate_chunks_for_variant,
-        _load_dlm_qwen_model,
-        _load_variant_table,
-        _resolve_probability_mode,
-    )
+    from scripts.evaluate_splicevardb_sav_multichunk import _aligned_chunk_positions, _batched_forward, _generate_chunks_for_variant, _load_variant_table, _resolve_probability_mode
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     variants = _load_variant_table(args.variant_h5)
@@ -452,16 +445,11 @@ def main() -> None:
             by_tx = load_sites_by_accession(args.transcript_annotation)
             var_tx = load_variant_transcripts(args.variant_transcript_csv)
 
-    if args.model_type == "dlm_qwen":
-        model, _ = _load_dlm_qwen_model(args.checkpoint, device)
-        cfg = None
-        prob_mode = "softmax"
-    else:
-        model, cfg = _load_hyenadna_model(
-            checkpoint_path=args.checkpoint,
-            train_config_path=args.train_config, device=device,
-        )
-        prob_mode = _resolve_probability_mode(cfg, "auto")
+    model, cfg = _load_hyenadna_model(
+        checkpoint_path=args.checkpoint,
+        train_config_path=args.train_config, device=device,
+    )
+    prob_mode = _resolve_probability_mode(cfg, "auto")
     boundary_modes = apply_chunker_boundary_modes(model, args.chunker_boundary_mode)
     fasta = Fasta(args.ref_fasta,
                   sequence_always_upper=True)

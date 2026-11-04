@@ -44,7 +44,3 @@ feature:
   enabled: true
   scalar_npz: ./data/eval/clinvar2026_phastcons_probe/clinvar_20260628_conservation_scalars.npz
   scalar_key: scalars
-mlflow:
-  experiment: spf_multichunk
-  run_name: spf_multichunk_8750
-  enabled: false

@@ -85,8 +85,10 @@ batch 16, four target-covering 15,000-base chunks, stride 1,250 and an unmasked
 8,750-position track. Reference and alternate channels are acceptor, donor,
 neither; the head sees six probability channels plus coverage. Conservation adds
 phastCons and phyloP at the variant, their window means and window maxima over
-plus/minus 2,500 bases. Match the normalization and column order of the supplied
-sidecar; arbitrary conservation arrays are not interchangeable.
+plus/minus 2,500 bases, including the variant. Generate the row-aligned six-column
+sidecar with `process_input/build_conservation_scalar_sidecar.py`. Means exclude
+undefined positions; phyloP is clipped to [-10,10] and divided by 10. The exact
+column order and download commands are specified in [DATA.md](DATA.md).
 
 For each of the five folds, after preparing the cache, scalar sidecar and frozen
 fold/mask files:
@@ -107,6 +109,9 @@ set `DRCONS_CODE_ROOT` to the absolute checkout path when invoking it.
 
 ## Analysis entry points
 
+The [result-to-code map](PAPER_RESULTS.md) identifies the matching model,
+cohort and inputs for every reported result family.
+
 | Analysis | Source |
 | --- | --- |
 | Label-free delta max from cached tracks | `scripts/deltamax_from_multichunk_cache.py` |
@@ -122,6 +127,6 @@ External tools use their native scoring methods and environments. A native
 no-call receives zero; a missing computation for our model is not a native
 no-call. Average precision is the reported precision-recall metric.
 
-Full training, pretrained inference and manuscript table reproduction have not
-been rerun as part of preparing this source distribution. The release validation
-record reports the implementation checks actually performed.
+Full training and complete manuscript benchmark reproduction have not been rerun
+as part of preparing this source distribution. The release validation record
+reports implementation checks and inference parity using the trained checkpoint.
