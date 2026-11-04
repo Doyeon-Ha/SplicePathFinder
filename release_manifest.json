@@ -486,7 +486,7 @@
     },
     "README.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "737a10db182c436056c2121c1b0e8090121cbcaed96d84d3853805fc1158b910"
+      "release_sha256": "d837affb78493c42ab3715ffa533bdf68df68edfc34da160618cf91cc1958142"
     },
     "THIRD_PARTY_NOTICES.md": {
       "source": "release documentation or metadata",
@@ -675,6 +675,10 @@
     "resources/clinvar20260628_metadata.json": {
       "source_kind": "public_benchmark_metadata",
       "release_sha256": "0a13135c7e6db44d9d05da1e10ea3c35aee59658d9f78e9afc4c17cf1ad87dad"
+    },
+    "NOTICE": {
+      "source_kind": "release_addition",
+      "release_sha256": "a2250d3188c9af1edff9c992f094f0c2ccbf49af2872b4619971c96b079db9fc"
     }
   },
   "adaptations": [
@@ -733,5 +737,10 @@
     "version": "1.0.0",
     "tag": "v1.0.0",
     "weights_included": false
+  },
+  "copyright": {
+    "year": 2026,
+    "holder": "3billion",
+    "notice": "NOTICE"
   }
 }

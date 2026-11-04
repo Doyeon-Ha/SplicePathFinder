@@ -194,6 +194,8 @@ its licenses. Dataset and external model terms apply independently.
 
 ## License
 
+Copyright 2026 3billion. See [NOTICE](NOTICE).
+
 The project's original code is licensed under the
 [Apache License, Version 2.0](LICENSE). Bundled third-party code retains the
 licenses listed in [third-party notices](THIRD_PARTY_NOTICES.md). Dataset and
