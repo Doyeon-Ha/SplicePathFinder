@@ -13,8 +13,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
-import sys
 from pathlib import Path
 
 import h5py
@@ -22,14 +20,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-SNAP = os.environ.get(
-    "DRCONS_CODE_ROOT",
-    "./code_snapshots/drcons_cv5_20260722",
-)
-sys.path.insert(0, SNAP)
-
-from model.sav_classifier import RbfMamba2SavClassifier  # noqa: E402
-from train.dataset_sav import SavFeatureDataset  # noqa: E402
+from model.sav_classifier import RbfMamba2SavClassifier
+from train.dataset_sav import SavFeatureDataset
 
 
 def dec(a: np.ndarray) -> np.ndarray:

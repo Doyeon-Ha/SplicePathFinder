@@ -44,17 +44,8 @@ from process_input.gencode_anchor import (
     find_anchor,
     load_canonical_table,
 )
+from process_input.variant_identity import require_equal, row_digest
 
-NAS = Path(".")
-EVAL = NAS / "data/eval"
-RELEASE = (EVAL / "clinvar_20260628_gencode_anchored_indel"
-           / "clinvar_20260628_gencode_anchored_indel.h5")
-V50 = EVAL / "v50mane/clinvar_20260628_gencode_anchored_indel.anchored_on_v50mane.h5"
-MANE = NAS / "data/canonical_dataset_v50_mane_regions.txt"
-SUBG = (EVAL / "recomb2027/single_anchor_recordgene_hgvs_20261029"
-        / "submitted_gene/per_variant.tsv.gz")
-HGVS = EVAL / "clinvar_pb_2026_split/coord_splice_fields_recordgene_hgvs_seed42.npz"
-SPLIT = EVAL / "clinvar_pb_2026_split_cc/gene_grouped_5fold_cc_seed42.npz"
 SL, CL_MAX = 5000, 10000
 
 
@@ -75,7 +66,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument('--release-h5', type=Path, required=True)
+    ap.add_argument('--v50-h5', type=Path, required=True)
+    ap.add_argument('--mane-table', type=Path, required=True)
+    ap.add_argument('--submitted-genes', type=Path, required=True)
+    ap.add_argument('--fold-npz', type=Path, required=True)
+    ap.add_argument('--legacy-coord', type=Path,
+                    help='Optional legacy strata; otherwise use release.h5 legacy_splice')
     args = ap.parse_args()
+    RELEASE, V50, MANE, SUBG, SPLIT, HGVS = (
+        args.release_h5, args.v50_h5, args.mane_table, args.submitted_genes,
+        args.fold_npz, args.legacy_coord)
     args.out.mkdir(parents=True, exist_ok=True)
 
     with h5py.File(RELEASE, "r") as f:
@@ -102,6 +103,7 @@ def main() -> None:
     with gzip.open(SUBG, "rt", newline="") as fh:
         sub = list(csv.DictReader(fh, delimiter="\t"))
     assert len(sub) == n, "submitted-gene table is not row aligned"
+    require_equal(key, [r['key'] for r in sub], 'submitted-gene metadata')
     submitted = [[t for t in (r["submitted_genes"] or "").split("|") if t]
                  for r in sub]
     preferred = np.asarray([r["preferred_gene"] for r in sub], dtype=object)
@@ -168,7 +170,10 @@ def main() -> None:
     anchored = status == "anchored"
 
     # fold 횡단 anchor 유전자: 이 anchor 배열에서 직접 찾는다
-    fold = np.load(SPLIT, allow_pickle=True)["fold_id"].astype(int)
+    split = np.load(SPLIT, allow_pickle=True)
+    if 'row_key_sha256' in split and str(split['row_key_sha256']) != row_digest(key):
+        raise ValueError('Frozen folds do not match the release row identities')
+    fold = split["fold_id"].astype(int)
     assert len(fold) == n, "split is not row aligned"
     gene_folds: dict[str, set[int]] = collections.defaultdict(set)
     for i in np.flatnonzero(anchored):
@@ -186,7 +191,13 @@ def main() -> None:
     still = [g for g, f in check.items() if len(f) > 1]
     assert not still, f"fold leakage remains for {still[:5]}"
 
-    universe = np.load(HGVS, allow_pickle=True)["splice"].astype(bool)
+    if HGVS is not None:
+        universe = np.load(HGVS, allow_pickle=True)["splice"].astype(bool)
+    else:
+        with h5py.File(RELEASE) as f:
+            universe = f['legacy_splice'][:].astype(bool)
+    if len(universe) != n:
+        raise ValueError('Legacy diagnostic strata are not row aligned')
     eval_nocall = universe & ~anchored
     print(f"anchored={int(anchored.sum())} "
           f"fold_spanning_excluded={int(spans_fold.sum())} "
@@ -212,6 +223,21 @@ def main() -> None:
              in_v50mane=in_v50, chunk_idx=a_chunk, local_idx=a_local,
              variant_offset=a_off, strand=a_strand, key=key, label=label,
              fold_id=fold, universe=universe)
+
+    # The alternative inputs preserve the source v50 row order and contain only
+    # metadata; the standard genome-backed cache builder generates their tracks.
+    alt_release = np.flatnonzero(needs_alt & in_v50)
+    alt_release = np.asarray(sorted(alt_release, key=lambda i: v_row[key[i]]), dtype=int)
+    with h5py.File(args.out / 'alt_anchors.h5', 'x') as out:
+        string = h5py.string_dtype('utf-8')
+        for name, values in dict(chrom=chrom, pos=pos, ref=ref, alt=alt, label=label,
+                                 gene_symbol=geneinfo, source_gene_name=gene,
+                                 source_strand=a_strand, strand=a_strand,
+                                 variant_offset=a_off).items():
+            values = values[alt_release]
+            out.create_dataset(name, data=values,
+                               dtype=string if values.dtype.kind in 'OSU' else values.dtype)
+        out.create_dataset('parent_row', data=np.asarray([v_row[key[i]] for i in alt_release], dtype=np.int64))
 
     with open(args.out / "alt_worklist.tsv", "w", newline="") as fh:
         w = csv.writer(fh, delimiter="\t", lineterminator="\n")
@@ -255,7 +281,7 @@ def main() -> None:
         "needs_alt_inference": int(needs_alt.sum()),
         "needs_alt_pos": int(label[needs_alt].sum()),
         "inputs": [str(RELEASE), str(V50), str(MANE), str(SUBG), str(SPLIT),
-                   str(HGVS)],
+                   str(HGVS) if HGVS is not None else 'release.h5:legacy_splice'],
     }
     (args.out / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=1))

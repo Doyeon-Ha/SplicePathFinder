@@ -16,6 +16,8 @@ import argparse
 import h5py
 import numpy as np
 import pyBigWig
+from pathlib import Path
+from process_input.variant_identity import variant_keys, row_digest, require_equal
 
 HALF = 2500
 PHYLOP_CLIP = 10.0
@@ -72,12 +74,24 @@ def main():
     ap.add_argument("--cons-dir", required=True)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", required=True)
+    ap.add_argument('--variant-h5', help='Row-aligned cohort table for a cache without identity columns')
     args = ap.parse_args()
 
-    with h5py.File(args.cache, "r") as f:
-        chrom = np.asarray([x.decode() if isinstance(x, bytes) else str(x)
-                            for x in f["chrom"][:]])
-        pos = f["pos"][:].astype(np.int64)
+    with h5py.File(args.cache, "r") as cache:
+        source = args.variant_h5 or args.cache
+        with h5py.File(source, 'r') as f:
+            if not all(k in f for k in ['chrom', 'pos', 'ref', 'alt']):
+                raise ValueError('Cache has no identities; provide --variant-h5')
+            key = variant_keys(f)
+            chrom = np.asarray([x.decode() if isinstance(x, bytes) else str(x)
+                                for x in f['chrom'][:]])
+            pos = f['pos'][:].astype(np.int64)
+        if len(pos) != len(cache['labels']):
+            raise ValueError('Variant table and cache row counts differ')
+        require_equal(np.arange(len(pos)), cache['row_index'][:], 'cache row_index')
+        if 'key' in cache:
+            require_equal(key, [x.decode() if isinstance(x, bytes) else str(x)
+                                for x in cache['key'][:]], 'cache identities')
     n = len(pos)
     print(f"cache rows={n}, workers={args.workers}", flush=True)
 
@@ -93,7 +107,8 @@ def main():
                 print(f"  chunk {j}/{nchunks}", flush=True)
     scalars = np.concatenate(parts, axis=0)
     assert len(scalars) == n
-    np.savez(args.out, scalars=scalars,
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    np.savez(args.out, scalars=scalars, row_key_sha256=row_digest(key),
              columns=np.array(["phastCons_pos", "phastCons_mean", "phastCons_max",
                                "phyloP_pos", "phyloP_mean", "phyloP_max"]))
     print(f"saved {scalars.shape} -> {args.out}", flush=True)

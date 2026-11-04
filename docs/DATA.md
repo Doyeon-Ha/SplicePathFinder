@@ -2,9 +2,11 @@
 
 Paths below are relative to the repository root. HDF5 means Hierarchical Data
 Format version 5; VCF means Variant Call Format. Keep input checksums and row order
-with each run. Source code, synthetic tests and the frozen gene-level paralog
-lookup are distributed here. Trained checkpoints, probability caches and
-variant-level benchmark assets have no public download endpoint in this release.
+with each run. Source code, synthetic tests, the frozen gene-level paralog
+lookup and public ClinVar cohort/gene metadata are distributed here. Trained weights are
+not hosted on GitHub; an external distribution endpoint has not been announced.
+Splits, anchor masks and conservation arrays can be regenerated using the
+[complete ClinVar workflow](CLINVAR_WORKFLOW.md).
 
 ## SpliceVarDB: obtain permission from its authors
 
@@ -72,7 +74,11 @@ and submitted gene metadata, obtained from `variant_summary.txt.gz` and
 `submission_summary.txt.gz`. Download these through the
 [ClinVar tab-delimited archive](https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/archive/)
 and preserve the snapshot used for a run; the top-level filenames are mutable.
-The exact summary snapshots and derived gene sidecars are not released here.
+The frozen gene sidecar is supplied as `resources/clinvar20260628_genes.tsv.gz`.
+The cohort/order/anchor manifest is `resources/clinvar20260628_rows.tsv.gz`.
+`resources/clinvar20260628_metadata.json` records their hashes. The
+[ClinVar workflow](CLINVAR_WORKFLOW.md) gives commands for generating metadata
+from the summaries and checking the result against the supplied reference.
 
 Temporal controls use the dated VCFs
 [2018-12-17](https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/weekly/clinvar_20181217.vcf.gz)
@@ -151,5 +157,6 @@ connected-component folds, anchor eligibility masks, submitted-gene sidecars and
 row-aligned input tables. `scripts/build_cc_gene_5fold.py` generates folds;
 `scripts/build_v50mane_reportedgene_anchors.py` generates anchor masks;
 `scripts/build_clinvar_v50mane_strata.py` generates distance strata.
-A prepared cache alone does not supply these inputs. The
+The [ClinVar workflow](CLINVAR_WORKFLOW.md) connects their explicit paths and
+checks identity/order across all inputs. The
 [result-to-code map](PAPER_RESULTS.md) states which assets each analysis consumes.

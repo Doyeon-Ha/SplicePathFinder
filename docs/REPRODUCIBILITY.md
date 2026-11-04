@@ -3,8 +3,9 @@
 This source distribution separates the SplicePath splice-site backbone from the
 SplicePathFinder (SPF) pathogenicity head. Reproducing numerical results requires
 the matching checkpoint, input sequences, variant row order, frozen fold files,
-eligibility masks and conservation sidecars. The source tree alone does not
-contain these benchmark assets.
+eligibility masks and conservation sidecars. The supplied cohort/gene metadata
+and preparation workflow define the reference inputs; trained weights and large
+probability caches are obtained or computed separately.
 
 ## Experiment identity
 
@@ -22,6 +23,12 @@ Reference tables using a different cohort or backbone require their own inputs;
 their predictions cannot be substituted by matching a genomic variant alone.
 
 ## Data preparation
+
+For the current ClinVar benchmark, follow the complete
+[ClinVar preparation and evaluation workflow](CLINVAR_WORKFLOW.md). It provides
+frozen cohort/gene metadata, source-regeneration commands, explicit paths and
+row-identity checks. The commands below build genome-annotation training inputs
+for the backbone.
 
 Populate the paths in `config/build_data/h5_data_regions_s1250_realflank_v50mane.yaml`
 with the inputs in [DATA.md](DATA.md). From the repository root:
@@ -51,9 +58,8 @@ epoch selection, and is evaluated on their non-paralog genes.
 input to a variant table. `scripts/build_v50mane_reportedgene_anchors.py` resolves
 reported genes and writes training eligibility masks;
 `scripts/build_clinvar_v50mane_strata.py` derives transcript-relative distance
-strata. These manuscript analysis scripts consume the directory layout declared
-by their constants, including derived ClinVar submitted-gene metadata. Their
-required sidecars are not produced by the VCF converter alone.
+strata. Their explicit input paths and submitted-gene metadata preparation are
+documented in the [ClinVar workflow](CLINVAR_WORKFLOW.md).
 
 `scripts/build_cc_gene_5fold.py` constructs the frozen connected-component gene
 folds: every set of gene tokens sharing a variant is kept together. For fold
@@ -90,22 +96,18 @@ sidecar with `process_input/build_conservation_scalar_sidecar.py`. Means exclude
 undefined positions; phyloP is clipped to [-10,10] and divided by 10. The exact
 column order and download commands are specified in [DATA.md](DATA.md).
 
-For each of the five folds, after preparing the cache, scalar sidecar and frozen
-fold/mask files:
-
-```bash
-.venv/bin/python -m train.train_sav_classifier \
-  --config-name splicepathfinder_v50 \
-  split.freeze_npz=data/eval/clinvar_pb_2026_split_cc/fold0_split_cc_seed42.npz \
-  train.out_dir=outputs/spf/fold0
-```
+Use the [five-fold fitting and evaluation commands](CLINVAR_WORKFLOW.md#6-fit-all-five-heads-and-evaluate-those-exact-outputs)
+to connect the prepared cache, scalars, folds and eligibility mask to
+`outputs/spf/fold0..4/best.pt` and pooled held-out predictions.
 
 SPF uses batch 64 on one device, full precision, seed 42, AdamW, learning rate
 0.0003, weight decay 0.05, positive-class weight 3.2, at most 50 epochs and
 validation early stopping with patience 8. Adjust the fold index and output
 directory together. Pool predictions only from each variant's held-out test fold.
-`scripts/eval_drcons_cv5_oof.py` implements this out-of-fold (OOF) evaluation;
-set `DRCONS_CODE_ROOT` to the absolute checkout path when invoking it.
+`scripts/eval_drcons_cv5_oof.py` implements this out-of-fold (OOF) evaluation using
+this checkout and explicit `--cache`, `--cvdir`, `--split-dir`, `--split-tag`,
+`--coord`, `--variants-h5`, `--scalars` and `--out` paths. Each row is scored
+exactly once by its held-out model.
 
 ## Analysis entry points
 

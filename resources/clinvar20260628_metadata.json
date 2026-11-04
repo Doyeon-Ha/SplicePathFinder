@@ -1,0 +1,20 @@
+{
+  "clinvar20260628_genes.tsv.gz": {
+    "bytes": 1738456,
+    "sha256": "f80a3849f8e455c3369372d90b0467d4c33d35e366068de42ffaea4a8cd0d6a1",
+    "rows": 378543,
+    "source": "Public ClinVar 2026-06-27 cohort, ClinVar gene summaries, and reference GENCODE v49/v50 annotation metadata. Includes variant identities, alleles, labels, gene symbols and anchor indices; no model input windows, probability tracks, weights or SpliceVarDB data."
+  },
+  "clinvar20260628_rows.tsv.gz": {
+    "bytes": 4093177,
+    "sha256": "a115318381e437808809c2006763c2305b29246459e009af36bfb2a36aa23dbc",
+    "rows": 378543,
+    "source": "Public ClinVar 2026-06-27 cohort, ClinVar gene summaries, and reference GENCODE v49/v50 annotation metadata. Includes variant identities, alleles, labels, gene symbols and anchor indices; no model input windows, probability tracks, weights or SpliceVarDB data."
+  },
+  "cohort_definition": "The reference GENCODE v49 anchored cohort is fixed when evaluating the GENCODE v50 model; v50_row records the v50 input order.",
+  "cohort_order_sha256": "76bbc602f72234891983ff1afd89fc2b89757712f27c5577ddc9f17daf8a86f2",
+  "gene_source_sha256": {
+    "variant_summary.txt.gz": "b739523cbb54a10a3bacfdf1b1e0044575bd34c1afb80f4ed0bd14f0451caf9c",
+    "submission_summary.txt.gz": "b2e8abe1ae3ebc954aad82724d19d6f06a18fe64f53d948bb7e15a29f1bceef5"
+  }
+}

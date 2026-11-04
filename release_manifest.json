@@ -229,11 +229,11 @@
     },
     "scripts/build_clinvar_v50mane_strata.py": {
       "source_sha256": "4912ba1f8987ecadf85affe2b2685f5be0ad6bbe5993a82735d8287275b4f61b",
-      "release_sha256": "9e60e1595ad5d508e41fa2fee3be030a38df5732b242bb6e0fd0a56858f1f9bd"
+      "release_sha256": "763b78ec49a4fcd4681e21f1f25571858725075b548e8335c7d02d795c17c3a7"
     },
     "scripts/build_v50mane_reportedgene_anchors.py": {
       "source_sha256": "e41b2f28b1c2ea7e5756b930d154a80765bf6b30d144dddcf307c613832f4053",
-      "release_sha256": "85f233710f4608c57938a40d9fa8b57065eca59f1a805a579048ced951ffcef4"
+      "release_sha256": "5e6d5c9b621233df633603a40c671d90e9309f1aea327895d0705f0886964ac1"
     },
     "scripts/canonical_site_track.py": {
       "source_sha256": "63567755d871d133dad8ddc74126248dc5424ad64752812c81b77c2e3deb0a09",
@@ -245,7 +245,7 @@
     },
     "scripts/eval_drcons_cv5_oof.py": {
       "source_sha256": "b8e84b50106e79e558627af4417904a55f87039374a66a3e37fbfb88f4b2a39e",
-      "release_sha256": "0e9a8fa13b1d7d3fc4a511395984c64826ba6a78f7b446242cd3071003a7cf5f"
+      "release_sha256": "45050dd8e33b0256d9176485addcc13db15f5aca2737a9351049979146a3d6a5"
     },
     "scripts/eval_pangolin_annotation.py": {
       "source_sha256": "45ddf87ffdccaf3a675d0f9b08b0faccf0a3fdef39612f95852e29d075f073ef",
@@ -293,7 +293,7 @@
     },
     "scripts/score_spf_external.py": {
       "source_sha256": "2c7a06d2f4baba69d51bf349d6f9f6ee3d89cfb2e1bc8dea64dec5fb44c9b723",
-      "release_sha256": "9c2e71b1d56e0f2c7f453391547e4b751615222f39f875fe1f129d9352ed29ac"
+      "release_sha256": "ceada0b8515d9c0e830a106928279dc824a6c69999746d5bcce6672e4198fa34"
     },
     "scripts/score_spliceai_official.py": {
       "source_sha256": "9b198c4ca33ad3c005c9b9881ab268d7bc21de7eff0a73b736ef63af4cf0542c",
@@ -410,12 +410,12 @@
     "pyproject.toml": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
       "source_sha256": "6533be88e5025d425cbf912cb017dd9c11cb869d845a2d2022d38583e3cf73fa",
-      "release_sha256": "b90376ebaa999a197eab8d3aae362ba890ca4cf282117892e96bb66099fa3493"
+      "release_sha256": "c4a16a7e8b7e1345c4947ba147242fe9bd092f03a5355cf0cd90cd6cc527ae1e"
     },
     "uv.lock": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
       "source_sha256": "e2623d6a165fec4ee870950f888f7bf7adb241826d9e0494d71eb0e617626374",
-      "release_sha256": "57dabea56af19533a76c0d74fceccf2aab7ee23ac2942d9472d4201da4f45f68"
+      "release_sha256": "e6dae88ee07f22e79518bd509833b829539f3a6d668dabb90d975a4a3d53cde0"
     },
     ".python-version": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
@@ -425,7 +425,7 @@
     "scripts/build_cc_gene_5fold.py": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
       "source_sha256": "86f012f6c2c8f244fce5e57755bafe4bf1a9ed85e2042af3c269cb7c2b8498f7",
-      "release_sha256": "dc71bdded6d3b99e2dcf79b0a83af8428d0cfda65fa760167ed2ea778df08fb0"
+      "release_sha256": "1ac7c28082bb14c1874b7e97f86292905ada76177efb172ddc80c35b857448d4"
     },
     "scripts/build_all_chroms_h5.py": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
@@ -465,7 +465,7 @@
     "config/train/splicepathfinder_v50.yaml": {
       "source": "composed train_spf_sp_v50mane_hnet_ep10 and recorded launcher train-mask overrides",
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
-      "release_sha256": "388218894d85fb45a95e2410e1f0e43c1de92d7e3acf444e409a48e901917e43"
+      "release_sha256": "f833917e921bdab2848a56a92d20b8d981f76b6f2fc79110f16f421726262dc8"
     },
     "scripts/verify_realflank_h5.py": {
       "source_commit": "cc4fbb0b71008a224b81f2b76a614ebeb9247c4a",
@@ -486,7 +486,7 @@
     },
     "README.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "69b24903cbcfbcbb209ef391041502cd189b38d6ec13f4c2705d1a103e7ed19c"
+      "release_sha256": "737a10db182c436056c2121c1b0e8090121cbcaed96d84d3853805fc1158b910"
     },
     "THIRD_PARTY_NOTICES.md": {
       "source": "release documentation or metadata",
@@ -494,15 +494,15 @@
     },
     "docs/DATA.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "4a1847ed33de1d7f880cdd2fd246aaf8d8efb119903aace797cae8113a0d2221"
+      "release_sha256": "b0d5ef9592a149f20d5eedc1f72c507b11a073c57880b20f0f286da054dcfaae"
     },
     "docs/REPRODUCIBILITY.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "c48b9f3967804d64070112306a4768fd078553ae95b2b7c3770c68c7c755288d"
+      "release_sha256": "1ac23562e4f8bde84ac0fede400a02a870b54f585c5cc4dc994f9bae25fb563d"
     },
     "docs/VALIDATION.md": {
       "source": "release documentation or metadata",
-      "release_sha256": "47b7d11588554998daf3737b8d70c72ebe2591bb56a2a40bb642806ee91d7cf4"
+      "release_sha256": "eef6f095016bc5dbf0d0b4bc2b5855785400c446c9837e238535d0f3296de366"
     },
     "scripts/v50mane_universe_followups.py": {
       "source_path": "scripts/v50mane_universe_followups.py",
@@ -598,7 +598,7 @@
       "source_path": "saved_analysis_source",
       "source_sha256": "ebdfc87ea55f5605766d7c7f60419c0e5ee48865e1bd5994fb9cbe451cc04ded",
       "source_kind": "saved_analysis_source",
-      "release_sha256": "ebdfc87ea55f5605766d7c7f60419c0e5ee48865e1bd5994fb9cbe451cc04ded"
+      "release_sha256": "8467dcee3bc81f7a3ee938bbb350352a6b3efd88dcbb35603a38b744b827a018"
     },
     "scripts/bench_recomb_current.py": {
       "source_path": "scripts/bench_recomb_current.py",
@@ -629,6 +629,52 @@
     "test/test_paper_analysis.py": {
       "source_kind": "release_test",
       "release_sha256": "99afb1c1126868790129ce3769acbfa97f3f4c0827907b40c6fe8fd1349589b4"
+    },
+    "LICENSE": {
+      "source_kind": "release_addition",
+      "release_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "docs/CLINVAR_WORKFLOW.md": {
+      "source_kind": "release_addition",
+      "release_sha256": "1b0748d43006c64e16c39ffb2be7faa1538b4d04875cb3233d16c41de6a5cb5b"
+    },
+    "process_input/variant_identity.py": {
+      "source_kind": "release_addition",
+      "release_sha256": "31dbbccf6915c5597fc144644202ed9e8aba2d916e5e67e15b143902dbdee316"
+    },
+    "scripts/prepare_clinvar_release.py": {
+      "source_kind": "release_addition",
+      "release_sha256": "c28b0c98ff78e3d5777b6d19d0f363c9aa3982c241e80f7f1e337d2d3fdaeb09"
+    },
+    "scripts/build_clinvar_gene_metadata.py": {
+      "source_kind": "release_addition",
+      "release_sha256": "75affc5264ea9f32377f279351f164b443c76672b244e30ff961df19a9edd28b"
+    },
+    "scripts/verify_clinvar_inputs.py": {
+      "source_kind": "release_addition",
+      "release_sha256": "a8dd5f90501d23a4aae16fac175f87479ff4da36266dd88373f39a885bdf6f92"
+    },
+    "scripts/assemble_v50mane_reportedgene_cache.py": {
+      "source_kind": "release_addition",
+      "source_path": "scripts/assemble_v50mane_reportedgene_cache.py",
+      "source_sha256": "90b8568f49878b07fe671c3efdc4d4b12faa75c2a1e0a86bb031ad12f4781ec5",
+      "release_sha256": "23f3d7e8562909c57b3ab4c14ce871fc2a7666f510ceb4b67c780450cf1f0345"
+    },
+    "test/test_public_workflow.py": {
+      "source_kind": "release_addition",
+      "release_sha256": "2073ccc0fb3b5673c517d65812b75376af4fe9124cb9f9908a99b218bf15a0db"
+    },
+    "resources/clinvar20260628_rows.tsv.gz": {
+      "source_kind": "public_benchmark_metadata",
+      "release_sha256": "a115318381e437808809c2006763c2305b29246459e009af36bfb2a36aa23dbc"
+    },
+    "resources/clinvar20260628_genes.tsv.gz": {
+      "source_kind": "public_benchmark_metadata",
+      "release_sha256": "f80a3849f8e455c3369372d90b0467d4c33d35e366068de42ffaea4a8cd0d6a1"
+    },
+    "resources/clinvar20260628_metadata.json": {
+      "source_kind": "public_benchmark_metadata",
+      "release_sha256": "0a13135c7e6db44d9d05da1e10ea3c35aee59658d9f78e9afc4c17cf1ad87dad"
     }
   },
   "adaptations": [
@@ -638,16 +684,17 @@
     "Exact conservation-scalar generator, temporal/bootstrap/statistical helpers, result formatters, case scorers and forward-only benchmark are included.",
     "Core numerical dependencies are pinned; the locked platform is Linux.",
     "The gene-level paralog lookup is included; restricted SpliceVarDB data and variant-keyed outputs are not redistributed.",
-    "GPU H-Net tests use a local miniature HyenaDNA trunk."
+    "GPU H-Net tests use a local miniature HyenaDNA trunk.",
+    "Public ClinVar cohort/anchor and gene metadata are supplied with source-regeneration commands and row-order checks.",
+    "Current-model preparation and OOF evaluation use explicit paths; the head defaults match the documented outputs.",
+    "Original code is licensed under Apache-2.0; model weights are not distributed through GitHub."
   ],
   "validation": {
     "date": "2026-11-04",
-    "cpu_tests_passed": 217,
-    "cpu_tests_skipped": 8,
-    "gpu_tests_passed": 225,
+    "gpu_tests_passed": 233,
     "gpu_tests_skipped": 0,
-    "cli_checks_passed": 22,
-    "python_files_parsed": 114,
+    "cli_checks_passed": 30,
+    "python_files_parsed": 120,
     "locked_dependencies_checked": true,
     "checkpoint_state_entries": 471,
     "checkpoint_prediction_max_abs_difference": 0.0,
@@ -660,11 +707,31 @@
     "device": "NVIDIA RTX A6000",
     "fresh_install_verified": false,
     "full_training_reproduction": false,
-    "full_benchmark_reproduction": false
+    "full_benchmark_reproduction": false,
+    "cpu_workflow_tests_passed": 7,
+    "cpu_workflow_tests_skipped": 1,
+    "clinvar_raw_rows": 384073,
+    "clinvar_cohort_rows": 378543,
+    "clinvar_v50_reference_rows": 378002,
+    "raw_vcf_cohort_identical": true,
+    "submitted_preferred_genes_identical": true,
+    "synthetic_oof_rows": 330,
+    "synthetic_oof_all_rows_predicted_once": true,
+    "all_frozen_fold_indices_identical": true,
+    "all_anchor_selection_arrays_identical": true,
+    "all_mane_strata_arrays_identical": true,
+    "long_allele_memory_regression_verified": true,
+    "canonical_table_identical": true,
+    "canonical_transcripts": 18539
   },
   "repository": "https://github.com/Doyeon-Ha/SplicePathFinder",
-  "project_license": null,
+  "project_license": "Apache-2.0",
   "manuscript_commit": "6867ec4c0d3971cc136043fa2ac5491bc5ce7a88",
   "analysis_source_commit": "bd578bf70b1fd9ecba3903dc17f2f1b22f6c88fe",
-  "scope": "Reported main and supplementary results; HyenaDNA/Mamba-2 SplicePath and pathogenicity heads, controls, inference and analysis."
+  "scope": "Reported main and supplementary results; HyenaDNA/Mamba-2 SplicePath and pathogenicity heads, controls, inference and analysis.",
+  "release": {
+    "version": "1.0.0",
+    "tag": "v1.0.0",
+    "weights_included": false
+  }
 }

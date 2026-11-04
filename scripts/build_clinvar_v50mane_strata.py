@@ -22,6 +22,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+from process_input.variant_identity import variant_keys, require_equal, row_digest
 
 from scripts.build_clinvar_recordgene_strata import (
     annotation_sites,
@@ -30,13 +31,6 @@ from scripts.build_clinvar_recordgene_strata import (
     strata_counts,
 )
 
-NAS = Path(".")
-EVAL = NAS / "data/eval"
-RELEASE = (EVAL / "clinvar_20260628_gencode_anchored_indel"
-           / "clinvar_20260628_gencode_anchored_indel.h5")
-MANE = NAS / "data/canonical_dataset_v50_mane_regions.txt"
-SEL = (EVAL / "recomb2027/v50mane_reportedgene_anchors_v2_20261030"
-       / "anchor_selection_v50mane.npz")
 # MANE regions table: name, ?, chrom, strand, tx_start, tx_end, intron starts,
 # intron ends, exon starts, exon ends, ... Only these seven reach the site index.
 COLUMNS = (0, 2, 3, 4, 5, 8, 9)
@@ -64,14 +58,20 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument('--release-h5', type=Path, required=True)
+    ap.add_argument('--mane-table', type=Path, required=True)
+    ap.add_argument('--anchor-selection', type=Path, required=True)
     args = ap.parse_args()
+    RELEASE, MANE, SEL = args.release_h5, args.mane_table, args.anchor_selection
 
     with h5py.File(RELEASE) as f:
         chrom, pos = dec(f["chrom"][:]), f["pos"][:].astype(np.int64)
         labels = f["label"][:].astype(np.int8)
+        key = variant_keys(f)
     n = len(labels)
     z = np.load(SEL, allow_pickle=True)
     anchor = np.asarray(z["gene"]).astype(str)
+    require_equal(key, z['key'], 'anchor selection')
     if len(anchor) != n:
         raise SystemExit(f"anchor rows {len(anchor)} != release rows {n}")
 
@@ -102,6 +102,7 @@ def main() -> None:
     splice = (intron_nt >= 1) | ((exon_nt >= 1) & (exon_nt <= 3))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(args.out, dist=dist, is_intron=is_intron, akind=akind,
+             key=key, row_key_sha256=row_digest(key),
              intron_nt=intron_nt, exon_nt=exon_nt, splice=splice, labels=labels,
              anchor_gene=anchor, site_source=source)
     summary = {

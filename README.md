@@ -24,7 +24,7 @@ tools when suitable wheels are unavailable. Install [uv](https://docs.astral.sh/
 and then:
 
 ```bash
-git clone https://github.com/Doyeon-Ha/SplicePathFinder.git
+git clone --branch v1.0.0 https://github.com/Doyeon-Ha/SplicePathFinder.git
 cd SplicePathFinder
 uv sync --frozen --inexact
 .venv/bin/python -c 'import torch, mamba_ssm, causal_conv1d; print(torch.__version__)'
@@ -56,12 +56,17 @@ provides an additional route.
 | phyloP 100-way conservation | [GRCh38 bigWig](https://hgdownload.soe.ucsc.edu/goldenPath/hg38/phyloP100way/hg38.phyloP100way.bw) | `data/conservation/hg38.phyloP100way.bw` |
 | Frozen gene-level paralog flags | [Included lookup](resources/grch38_paralog_flags.tsv) | Copy to `paralog_info/grch38_paralog_flags.tsv`; provenance limits in [DATA.md](docs/DATA.md) |
 
-The [data guide](docs/DATA.md) gives preparation commands, external model links,
-version checks and required derived assets. Exact numerical reproduction also
-needs row-aligned gene metadata, folds, eligibility
-masks and the matching trained checkpoints. These assets have no public download
-endpoint in this source release; rebuilding inputs from a newer upstream release
-changes the benchmark.
+The [data guide](docs/DATA.md) gives upstream downloads and version checks. The
+[ClinVar workflow](docs/CLINVAR_WORKFLOW.md) provides the complete command chain:
+raw VCF → frozen cohort → submitted-gene metadata → folds → reported-gene anchors
+and distance strata → probability caches → six conservation features → head
+fitting → held-out evaluation, with row-identity checks at each boundary.
+The frozen public cohort and gene metadata are included in `resources/` with
+checksums; source-generation commands are documented in that workflow.
+
+**Trained model weights are not hosted on GitHub or attached to this release.**
+Use locally trained checkpoints or weights obtained separately from the authors.
+An external weight-download location has not been announced in this repository.
 
 ## Hardware resources
 
@@ -119,9 +124,10 @@ checks performed on this distribution.
 Full inference requires a trained backbone checkpoint, its training configuration,
 a reference genome and an anchored variant table in Hierarchical Data Format
 version 5 (HDF5). Download locations and required inputs are described in
-[data availability](docs/DATA.md). Checkpoints, benchmark tables, frozen splits,
-conservation sidecars and probability caches are not bundled in this source
-distribution.
+[data availability](docs/DATA.md). The [ClinVar workflow](docs/CLINVAR_WORKFLOW.md)
+generates splits, anchor metadata, conservation arrays and probability caches.
+Its scoring stage requires a locally supplied backbone checkpoint; its fitting
+stage produces the five head checkpoints.
 
 Given those inputs, generate the four-chunk probability cache and read delta max:
 
@@ -171,6 +177,10 @@ inference and aggregation to the implementation. It distinguishes the GENCODE
 v50 epoch-10 model from epoch-8 reference experiments. A checkpoint's saved recipe
 and input cohort determine which results it can reproduce.
 
+The [current-model evaluation command](docs/CLINVAR_WORKFLOW.md#6-fit-all-five-heads-and-evaluate-those-exact-outputs)
+explicitly connects `outputs/spf/fold0..4/best.pt` to the cache, scalars, component
+folds and MANE strata produced by the preparation workflow.
+
 The v50 backbone recipe is `config/train/splicepath_v50.yaml`; the corresponding
 SPF recipe is `config/train/splicepathfinder_v50.yaml`. Checkpoints and training
 logs are written to the configured output directories.
@@ -184,7 +194,7 @@ its licenses. Dataset and external model terms apply independently.
 
 ## License
 
-No project-wide license has been specified. Public access to this source does
-not grant a general permission to reuse, modify or redistribute the project's
-original code. Bundled third-party code retains the licenses listed in
-[third-party notices](THIRD_PARTY_NOTICES.md).
+The project's original code is licensed under the
+[Apache License, Version 2.0](LICENSE). Bundled third-party code retains the
+licenses listed in [third-party notices](THIRD_PARTY_NOTICES.md). Dataset and
+separately distributed model-weight terms apply independently.
